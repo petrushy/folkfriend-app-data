@@ -36,8 +36,10 @@ then
     echo "thesession.org data has not changed. Exiting."
     echo ""
     exit 1
-else 
+else
     cat $NEW_HASH > $OLD_HASH
+    python src/download_folkwiki_data.py $SCRIPTPATH
+    python src/build_folkwiki_data.py $SCRIPTPATH
     python src/build_non_user_data.py $SCRIPTPATH
     mv data/folkfriend-non-user-data.json ../public/
     mv data/nud-meta.json ../public/

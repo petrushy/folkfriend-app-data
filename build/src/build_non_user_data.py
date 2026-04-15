@@ -26,6 +26,7 @@ def build_non_user_data(parent_dir):
     data_dir = os.path.join(parent_dir, 'data')
     tunes_path = os.path.join(data_dir, 'tunes.json')
     aliases_path = os.path.join(data_dir, 'aliases.json')
+    folkwiki_path = os.path.join(data_dir, 'folkwiki-processed.json')
     non_user_data_path = os.path.join(
         data_dir, 'folkfriend-non-user-data.json')
     non_user_metadata_path = os.path.join(data_dir, 'nud-meta.json')
@@ -88,6 +89,38 @@ def build_non_user_data(parent_dir):
     for setting_id, contour in contours:
         settings[setting_id]['contour'] = contour
 
+    # Add empty origin field to all thesession settings for schema uniformity
+    for s in settings.values():
+        s['origin'] = ''
+
+    # --- Merge folkwiki data if available ---
+    if os.path.exists(folkwiki_path):
+        log.info(f'Merging folkwiki data from {folkwiki_path}')
+        with open(folkwiki_path, 'r') as f:
+            folkwiki_data = json.load(f)
+
+        fw_settings = folkwiki_data.get('settings', {})
+        fw_aliases = folkwiki_data.get('aliases', {})
+
+        overlap_s = set(settings.keys()) & set(fw_settings.keys())
+        overlap_a = set(gathered_aliases.keys()) & set(fw_aliases.keys())
+        if overlap_s:
+            log.warning(
+                f'{len(overlap_s)} setting_id collisions between '
+                'thesession and folkwiki — folkwiki entries will overwrite'
+            )
+        if overlap_a:
+            log.warning(f'{len(overlap_a)} tune_id collisions in aliases — '
+                        'folkwiki entries will overwrite')
+
+        settings.update(fw_settings)
+        gathered_aliases.update(fw_aliases)
+
+        log.info(f'Merged {len(fw_settings)} folkwiki settings and '
+                 f'{len(fw_aliases)} folkwiki alias entries')
+    else:
+        log.info(f'No folkwiki data found at {folkwiki_path}, skipping merge')
+
     # Put everything together
     non_user_data = {
         'settings': settings,
@@ -144,7 +177,7 @@ def gather_aliases(alias_records, tune_data):
     for i, _ in enumerate(tune_data):
         tid = tune_data[i]['tune_id']
         alias = tune_data[i]['name'].lower()
-        
+
         # Tune name is identical accross settings to only add once per setting.
         if not aliases[tid] or aliases[tid][0] != alias:
             aliases[tid].insert(0, alias)
@@ -216,8 +249,15 @@ def generate_midi_contour(args):
     if not os.path.exists(midi_out_path):
         midi.abc_to_midi(abc, midi_out_path)
 
-    midi_events = midi.midi_as_csv(midi_out_path)
-    note_contour = midi.CSVMidiNoteReader(midi_events).to_midi_contour()
+    if not os.path.exists(midi_out_path):
+        # abc2midi failed to produce output (malformed ABC, unsupported syntax)
+        return setting['setting_id'], ''
+
+    try:
+        midi_events = midi.midi_as_csv(midi_out_path)
+        note_contour = midi.CSVMidiNoteReader(midi_events).to_midi_contour()
+    except Exception:
+        return setting['setting_id'], ''
 
     return setting['setting_id'], note_contour
 
