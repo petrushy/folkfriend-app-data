@@ -179,3 +179,68 @@ The Rust `Setting` struct in `folkfriend/rust/src/index/schema.rs` has `#[serde(
 
 1. **Display `origin` field** — the region (e.g. "Dalarna") is in the index but not shown anywhere in the UI yet. Could appear in the Tune view header or as a chip alongside the dance type.
 2. **Deploy** — once abc2midi 4.84 is in `build/abc2midi`, run `bash build.sh` to build, deploy to Firebase, and the live app picks it up on next refresh.
+
+---
+
+## Deployment — DONE (April 2026)
+
+### Firebase Hosting — multi-site setup
+
+Two separate sites within the `folkfriend-petrush-fork` Firebase project:
+
+- **`folkfriend-data.web.app`** — hosts the tune index JSON (~40 MB, 60k settings).
+  - `folkfriend-app-data/.firebaserc` → project `folkfriend-petrush-fork`
+  - `folkfriend-app-data/firebase.json` → `"site": "folkfriend-data"`
+  - Deploy: `cd folkfriend-app-data && firebase deploy --only hosting`
+
+- **`folkfriend-petrush-fork.web.app`** — hosts the Vue app.
+  - `folkfriend/app/.firebaserc` → project `folkfriend-petrush-fork` (default)
+  - Deploy: `cd folkfriend/app && npm run build && firebase deploy --only hosting`
+
+### Tune index versioning (`nud-meta.json`)
+
+The app only re-fetches the tune index when `remoteVersion > localVersion` (changed from the original `>= 28` threshold). The `v` field in `nud-meta.json` must be bumped whenever the data changes to force clients to update. Current deployed value: **v=2325**.
+
+### Smoke tests
+
+`test/smoke_test.py` — run after any data deploy to verify endpoints and data integrity:
+```sh
+python3 test/smoke_test.py
+```
+
+---
+
+## Folkwiki source URL — IN PROGRESS
+
+### Problem
+Folkwiki wiki pages use numeric IDs in URLs: `http://www.folkwiki.se/Musik/4237` (not name-based like `/Musik/Norrbottenschottis`). The hex hash in the ABC filename (`165c37`) is **not** the page ID — they are unrelated identifiers.
+
+Each `/Musik/{pageID}` page embeds a `pub/cache/{name}_{hexhash}.abc` link, so by fetching these pages we can build a `hexhash → pageID` reverse mapping.
+
+### New script: `build/src/discover_folkwiki_pageids.py`
+
+Crawls `http://www.folkwiki.se/Musik/1` through `/Musik/6500`, extracts hexhashes from each page, and saves `build/data/folkwiki/hexhash_to_pageid.json`. Runs with 20 parallel workers (~2 minutes total). Saves incrementally so it can be safely interrupted and resumed.
+
+```sh
+cd build && source env.sh && python src/discover_folkwiki_pageids.py .
+```
+
+Output: `build/data/folkwiki/hexhash_to_pageid.json` — `{hexhash: pageID, ...}`
+
+**Status:** Crawl was run April 2026, reached ~5100 mappings out of ~6500 pages before session ended. The file is saved incrementally. Re-run the script to complete it (it will skip already-seen page IDs).
+
+### What needs to happen after crawl completes
+
+1. **Update `build_folkwiki_data.py`** — load `hexhash_to_pageid.json` and set `source_url` per setting:
+   - If hexhash is in mapping: `http://www.folkwiki.se/Musik/{pageID}`
+   - Otherwise fallback: `http://www.folkwiki.se/pub/cache/{name}_{hexhash}.abc`
+
+2. **Rebuild data**: `python src/build_folkwiki_data.py . && python src/build_non_user_data.py .`
+
+3. **Copy to public/** and bump `v` in `nud-meta.json`, redeploy data.
+
+4. **App (`Tune.vue`)**: The `sourceUrl` computed property currently tries name-based `/Musik/{TuneName}` (which often 404s). After the data rebuild includes real page IDs in `source_url`, update `Tune.vue` to use `this.settings[0]?.source_url` for folkwiki tunes. The `worker.js` already extracts `source_url` as a sideband (like `abc`) and re-attaches it in `settingsFromTuneID`.
+
+### `source_url` field — currently in data
+
+`build_folkwiki_data.py` already stores `source_url` per setting (currently the `pub/cache` ABC file URL). `worker.js` already extracts/re-attaches it. `Tune.vue` currently ignores it and falls back to the name-based URL. The only remaining step is to populate it with the correct `/Musik/{pageID}` URL and update `Tune.vue` to use it.
