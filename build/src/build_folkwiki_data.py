@@ -278,6 +278,7 @@ def deduplicate_aliases(aliases):
 def build_folkwiki_data(parent_dir):
     folkwiki_dir = os.path.join(parent_dir, 'data', 'folkwiki')
     manifest_path = os.path.join(folkwiki_dir, 'manifest.json')
+    pageid_path = os.path.join(folkwiki_dir, 'hexhash_to_pageid.json')
     midis_dir = os.path.join(folkwiki_dir, 'midis')
     output_path = os.path.join(parent_dir, 'data', 'folkwiki-processed.json')
 
@@ -290,6 +291,12 @@ def build_folkwiki_data(parent_dir):
 
     with open(manifest_path, 'r', encoding='utf-8') as f:
         manifest = json.load(f)
+
+    hexhash_to_pageid = {}
+    if os.path.exists(pageid_path):
+        with open(pageid_path, 'r', encoding='utf-8') as f:
+            hexhash_to_pageid = json.load(f)
+        log.info(f'Loaded {len(hexhash_to_pageid)} hexhash→pageID mappings')
 
     log.info(f'Processing {len(manifest)} folkwiki entries from manifest')
 
@@ -331,7 +338,11 @@ def build_folkwiki_data(parent_dir):
                 'abc_body': parsed['abc_body'],
                 'dance': parsed['dance'],
                 'origin': parsed['origin'],
-                'source_url': manifest[hexhash]['url'],
+                'source_url': (
+                    f'http://www.folkwiki.se/Musik/{hexhash_to_pageid[hexhash]}'
+                    if hexhash in hexhash_to_pageid
+                    else manifest[hexhash]['url']
+                ),
             })
 
             # Build aliases from all T: fields

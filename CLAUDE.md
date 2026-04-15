@@ -67,7 +67,7 @@ firebase.json                    # Firebase Hosting config (serves public/, adds
    cd build && . env.sh && pip install -r requirements.txt
    ```
 
-2. `abc2midi` binary version **4.84 (January 20 2023)** placed at `build/abc2midi`. Get it from [abcmidi](https://github.com/sshlien/abcmidi). The build script checks the version and exits if it doesn't match. During development a symlink to the system abc2midi (5.02 via Homebrew) works fine for building and testing, but `build.sh` will reject it on the version check — run the Python scripts directly to bypass this.
+2. `abc2midi` binary version **4.84 (January 20 2023)** placed at `build/abc2midi`. Get it from [abcmidi](https://github.com/sshlien  /abcmidi). The build script checks the version and exits if it doesn't match. During development a symlink to the system abc2midi (5.02 via Homebrew) works fine for building and testing, but `build.sh` will reject it on the version check — run the Python scripts directly to bypass this.
 
 3. Firebase CLI installed and authenticated: `npm install -g firebase-tools && firebase login`
 
@@ -208,43 +208,23 @@ The app only re-fetches the tune index when `remoteVersion > localVersion` (chan
 python3 test/smoke_test.py
 ```
 
-### Architecture docs
-
-- `docs/data-pipeline.md` — build, storage, and deployment flow for `folkfriend-app-data`
-
 ---
 
-## Folkwiki source URL — IN PROGRESS
+## Folkwiki source URL — DONE (April 2026)
 
-### Problem
-Folkwiki wiki pages use numeric IDs in URLs: `http://www.folkwiki.se/Musik/4237` (not name-based like `/Musik/Norrbottenschottis`). The hex hash in the ABC filename (`165c37`) is **not** the page ID — they are unrelated identifiers.
+### How it works
 
-Each `/Musik/{pageID}` page embeds a `pub/cache/{name}_{hexhash}.abc` link, so by fetching these pages we can build a `hexhash → pageID` reverse mapping.
+Folkwiki wiki pages use numeric IDs in URLs: `http://www.folkwiki.se/Musik/4237`. The hex hash in the ABC filename (`165c37`) is unrelated to the page ID.
 
-### New script: `build/src/discover_folkwiki_pageids.py`
+**`build/src/discover_folkwiki_pageids.py`** crawled `/Musik/1`-`/Musik/6500` with 20 parallel workers and built `build/data/folkwiki/hexhash_to_pageid.json` - a `{hexhash: pageID}` reverse mapping. 7,154 mappings, covering 72% of the 6,103 manifest entries. The remaining 28% have no corresponding wiki page and fall back to the `pub/cache` ABC file URL.
 
-Crawls `http://www.folkwiki.se/Musik/1` through `/Musik/6500`, extracts hexhashes from each page, and saves `build/data/folkwiki/hexhash_to_pageid.json`. Runs with 20 parallel workers (~2 minutes total). Saves incrementally so it can be safely interrupted and resumed.
+**`build/src/build_folkwiki_data.py`** loads `hexhash_to_pageid.json` at build time and sets `source_url` per setting:
 
-```sh
-cd build && source env.sh && python src/discover_folkwiki_pageids.py .
-```
+- If hexhash is in mapping: `http://www.folkwiki.se/Musik/{pageID}`
+- Otherwise: `http://www.folkwiki.se/pub/cache/{name}_{hexhash}.abc`
 
-Output: `build/data/folkwiki/hexhash_to_pageid.json` — `{hexhash: pageID, ...}`
+**`app/src/js/source.mjs`** (new helper module) handles URL construction for both thesession and folkwiki tunes. `Tune.vue` and `Favourites.vue` use it. `worker.js` extracts `source_url` as a sideband field (same pattern as `abc`) and re-attaches it in `settingsFromTuneID`.
 
-**Status:** Crawl was run April 2026, reached ~5100 mappings out of ~6500 pages before session ended. The file is saved incrementally. Re-run the script to complete it (it will skip already-seen page IDs).
+### nud-meta.json versioning note
 
-### What needs to happen after crawl completes
-
-1. **Update `build_folkwiki_data.py`** — load `hexhash_to_pageid.json` and set `source_url` per setting:
-   - If hexhash is in mapping: `http://www.folkwiki.se/Musik/{pageID}`
-   - Otherwise fallback: `http://www.folkwiki.se/pub/cache/{name}_{hexhash}.abc`
-
-2. **Rebuild data**: `python src/build_folkwiki_data.py . && python src/build_non_user_data.py .`
-
-3. **Copy to public/** and bump `v` in `nud-meta.json`, redeploy data.
-
-4. **App (`Tune.vue`)**: The `sourceUrl` computed property currently tries name-based `/Musik/{TuneName}` (which often 404s). After the data rebuild includes real page IDs in `source_url`, update `Tune.vue` to use `this.settings[0]?.source_url` for folkwiki tunes. The `worker.js` already extracts `source_url` as a sideband (like `abc`) and re-attaches it in `settingsFromTuneID`.
-
-### `source_url` field — currently in data
-
-`build_folkwiki_data.py` already stores `source_url` per setting (currently the `pub/cache` ABC file URL). `worker.js` already extracts/re-attaches it. `Tune.vue` currently ignores it and falls back to the name-based URL. The only remaining step is to populate it with the correct `/Musik/{pageID}` URL and update `Tune.vue` to use it.
+The `v` field was manually bumped ahead of the actual day count in a previous session to force client updates. Always set `v` to a value strictly greater than the last deployed value when rebuilding data. Current deployed: v=2326.
