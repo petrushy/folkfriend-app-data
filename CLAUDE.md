@@ -208,6 +208,10 @@ The app only re-fetches the tune index when `remoteVersion > localVersion` (chan
 python3 test/smoke_test.py
 ```
 
+### Architecture docs
+
+- `docs/data-pipeline.md` — build, storage, and deployment flow for `folkfriend-app-data`
+
 ---
 
 ## Folkwiki source URL — IN PROGRESS

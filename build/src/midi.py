@@ -12,6 +12,7 @@ import ff_config
 logging.basicConfig(level=logging.DEBUG,
                     format='[%(name)s:%(lineno)s] %(message)s')
 log = logging.getLogger(os.path.basename(__file__))
+ABC_TO_MIDI_TIMEOUT_SECONDS = 30
 
 
 class CSVMidiNoteReader(csv.DictReader):
@@ -160,14 +161,22 @@ def abc_to_midi(abc, midi_path, clean=True):
     """Convert ABC text into a midi file."""
 
     # Generate MIDI file with chords and actual instruments
-    captured = subprocess.run([
-        './abc2midi', '-',
-        '-quiet', '-silent',
-        '-NGUI' if clean else '',
-        '-o', midi_path
-    ],
-        input=abc.encode('utf-8'),
-        capture_output=True)
+    try:
+        captured = subprocess.run([
+            './abc2midi', '-',
+            '-quiet', '-silent',
+            '-NGUI' if clean else '',
+            '-o', midi_path
+        ],
+            input=abc.encode('utf-8'),
+            capture_output=True,
+            timeout=ABC_TO_MIDI_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        log.warning(
+            f'abc2midi timed out after {ABC_TO_MIDI_TIMEOUT_SECONDS}s for '
+            f'{midi_path}'
+        )
+        return
     stderr = captured.stderr.decode('utf-8')
     if stderr:
         log.warning(stderr, file=sys.stderr)
