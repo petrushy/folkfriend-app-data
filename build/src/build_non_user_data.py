@@ -86,8 +86,18 @@ def build_non_user_data(parent_dir):
     # It's possible that a contour doesn't exist for some setting, but
     #   in that case we still want to keep the setting because it might
     #   be useful to have the sheet music even if it isn't queryable.
+    empty_contours = 0
     for setting_id, contour in contours:
         settings[setting_id]['contour'] = contour
+        if not contour:
+            empty_contours += 1
+
+    total = len(contours)
+    log.info(
+        f'thesession contours: {total - empty_contours}/{total} non-empty '
+        f'({empty_contours} failed, '
+        f'{100 * empty_contours / total:.1f}%)'
+    )
 
     # Add empty origin field to all thesession settings for schema uniformity
     for s in settings.values():
@@ -270,7 +280,8 @@ def build_nud_meta(nud_path, nud_meta_path):
 
     nud_meta = {
         'v': days_since_2020,
-        'size': non_user_data_bytes
+        'size': non_user_data_bytes,
+        'date': today.strftime('%Y-%m-%d'),
     }
 
     with open(nud_meta_path, 'w') as f:

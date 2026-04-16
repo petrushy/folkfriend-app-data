@@ -391,11 +391,18 @@ def build_folkwiki_data(parent_dir):
             # contour added below
         }
 
+    empty_contours = 0
     for setting_id, contour in contours:
-        if contour:
-            settings[setting_id]['contour'] = contour
-        else:
-            settings[setting_id]['contour'] = ''
+        settings[setting_id]['contour'] = contour
+        if not contour:
+            empty_contours += 1
+
+    total = len(contours)
+    log.info(
+        f'folkwiki contours: {total - empty_contours}/{total} non-empty '
+        f'({empty_contours} failed, '
+        f'{100 * empty_contours / total:.1f}%)'
+    )
 
     output = {
         'settings': settings,

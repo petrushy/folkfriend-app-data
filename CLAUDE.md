@@ -67,7 +67,7 @@ firebase.json                    # Firebase Hosting config (serves public/, adds
    cd build && . env.sh && pip install -r requirements.txt
    ```
 
-2. `abc2midi` binary version **4.84 (January 20 2023)** placed at `build/abc2midi`. Get it from [abcmidi](https://github.com/sshlien  /abcmidi). The build script checks the version and exits if it doesn't match. During development a symlink to the system abc2midi (5.02 via Homebrew) works fine for building and testing, but `build.sh` will reject it on the version check — run the Python scripts directly to bypass this.
+2. `abc2midi` binary version **5.02 (February 16 2025)** placed at `build/abc2midi`. Get it from [abcmidi](https://github.com/sshlien/abcmidi). The build script checks the version and exits if it doesn't match. A symlink to the Homebrew binary works: `ln -sf /opt/homebrew/bin/abc2midi build/abc2midi`.
 
 3. Firebase CLI installed and authenticated: `npm install -g firebase-tools && firebase login`
 
@@ -77,15 +77,18 @@ firebase.json                    # Firebase Hosting config (serves public/, adds
 cd build && bash build.sh
 ```
 
-The script:
+The script (`set -e` — exits immediately on any failure):
 
-1. Verifies abc2midi version
+1. Verifies abc2midi version string
 2. Downloads `tunes.json` and `aliases.json` from thesession.org GitHub into `build/data/`
 3. Compares SHA1 hash of data files against the previous run — exits early if unchanged
-4. Runs `build_non_user_data.py` (multiprocessing, ~1 ABC→MIDI per setting, cached in `build/data/midis/`)
-5. Moves output JSON files to `public/`
-6. `git add`, `git commit` (with `nud-meta.json` content as the message), `git push`
-7. `firebase deploy`
+4. Runs `download_folkwiki_data.py --offline` (uses cached ABC files, no network)
+5. Runs `build_folkwiki_data.py` → `build/data/folkwiki-processed.json`
+6. Runs `build_non_user_data.py` (merges thesession + folkwiki, ABC→MIDI→contour, cached in `build/data/midis/`)
+7. Runs `validate_output.py` — aborts if settings count, alias count, contour rate, or folkwiki presence is below thresholds
+8. Moves output JSON files to `public/`
+9. `git add`, `git commit` (with `nud-meta.json` content as the message), `git push`
+10. `firebase deploy`
 
 ## Firebase Hosting
 
@@ -139,7 +142,7 @@ Swedish folk music from folkwiki.se is merged into the same `folkfriend-non-user
 
 6. **`build/venv/`** — Python virtualenv created, all requirements installed.
 
-7. **`build/abc2midi`** — Currently a symlink to `/opt/homebrew/bin/abc2midi` (version 5.02). Production builds require version 4.84 per `build.sh`'s version check.
+7. **`build/abc2midi`** — Symlink to `/opt/homebrew/bin/abc2midi` (version 5.02). `build.sh` verifies the version string matches before proceeding.
 
 ### Running the full pipeline (folkwiki already built)
 
@@ -175,10 +178,25 @@ The Rust `Setting` struct in `folkfriend/rust/src/index/schema.rs` has `#[serde(
 - **Source link** — `app/src/views/Tune.vue` updated. Tunes with `tuneID < 1,000,000` link to thesession.org (existing behaviour). Tunes with `tuneID >= 1,000,000` (folkwiki) link to `http://www.folkwiki.se/Musik/{TuneName}`, constructed from the display name with spaces → underscores. Both the tune-level chip and the per-setting chip are handled.
 - **No other app changes required** — folkwiki tunes appear in melody and name search automatically once the merged JSON is deployed.
 
+### Gap-fill for Latin-1 encoded URLs — `fill_missing_folkwiki.py`
+
+The Wayback Machine CDX API misses ABC files whose URLs use Latin-1 percent-encoding (e.g. `%F6` for ö, `%E4` for ä). As a result, tunes with Swedish characters in their names are absent from `manifest.json` even though their wiki pages exist.
+
+**`build/src/fill_missing_folkwiki.py`** bridges this gap:
+
+- For each entry in `hexhash_to_pageid.json` that is not already in `manifest.json`, fetches `http://www.folkwiki.se/Musik/{pageID}`, extracts the `.abc` href from the page HTML (which contains the correctly Latin-1-encoded URL), downloads the file, and updates `manifest.json`.
+- Uses 5 parallel workers, 3 retries per page, incremental manifest saves every 100 pages.
+- Result (April 2026): 7,885 ABC files total, adding 1,782 previously missing tunes (e.g. "Baggbölebäckens klagan").
+
+**When to re-run:** When new wiki pages are added to folkwiki.se that contain Swedish characters in their tune names. Check by comparing `len(manifest)` against `len(hexhash_to_pageid)` — a growing gap indicates new Latin-1-named tunes. This script is **not** part of `build.sh` (it is slow and rarely needed); run it manually:
+
+```sh
+cd build && . env.sh && python src/fill_missing_folkwiki.py .
+```
+
 ### Remaining / optional
 
-1. **Display `origin` field** — the region (e.g. "Dalarna") is in the index but not shown anywhere in the UI yet. Could appear in the Tune view header or as a chip alongside the dance type.
-2. **Deploy** — once abc2midi 4.84 is in `build/abc2midi`, run `bash build.sh` to build, deploy to Firebase, and the live app picks it up on next refresh.
+1. **Deploy** — run `bash build.sh` to build, deploy to Firebase, and the live app picks it up on next refresh.
 
 ---
 

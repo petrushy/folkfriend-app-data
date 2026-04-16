@@ -1,24 +1,26 @@
 #!/bin/bash
+set -e
 
 SCRIPT=`realpath $0`
 SCRIPTPATH=`dirname $SCRIPT`
 cd $SCRIPTPATH
 
 ABC_VER=`./abc2midi -ver`
+# abc2midi 5.02 (February 2025) — symlink build/abc2midi to the system binary
 SUPPORTED_ABC_VER="5.02 February 16 2025 abc2midi"
 
 if [[ "$ABC_VER" == "$SUPPORTED_ABC_VER" ]]
 then
     echo "Found abc2midi version $ABC_VER"
 else
-	echo "Please ensure abc2midi version $SUPPORTED_ABC_VER is installed."
-	echo "Current version: $ABC_VER"
-	echo "See https://github.com/sshlien/abcmidi"
-	echo "Provide this executable as 'abc2midi' in the build directory."
-    exit
+    echo "Please ensure abc2midi version $SUPPORTED_ABC_VER is installed."
+    echo "Current version: $ABC_VER"
+    echo "See https://github.com/sshlien/abcmidi"
+    echo "Provide this executable as 'abc2midi' in the build directory."
+    exit 1
 fi
 
-# Ensure file storing previous hashes existss
+# Ensure file storing previous hashes exists
 mkdir -p data/
 
 OLD_HASH=data/old_hash.txt
@@ -40,9 +42,10 @@ then
     exit 1
 else
     cat $NEW_HASH > $OLD_HASH
-    python src/download_folkwiki_data.py $SCRIPTPATH
+    python src/download_folkwiki_data.py $SCRIPTPATH --offline
     python src/build_folkwiki_data.py $SCRIPTPATH
     python src/build_non_user_data.py $SCRIPTPATH
+    python src/validate_output.py $SCRIPTPATH
     mv data/folkfriend-non-user-data.json ../public/
     mv data/nud-meta.json ../public/
     cd ..
