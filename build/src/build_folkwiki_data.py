@@ -131,6 +131,7 @@ def parse_abc_tune(abc_text):
     mode = None
     dance = ''
     origin = ''
+    composer = ''
     body_lines = []
     in_body = False
 
@@ -162,7 +163,9 @@ def parse_abc_tune(abc_text):
                 dance = value.lower().strip()
             elif field == 'O':
                 origin = value.strip()
-            # Other fields (Z:, S:, B:, C:, D:, N:, X:) are ignored
+            elif field == 'C':
+                composer = value.strip()
+            # Other fields (Z:, S:, B:, D:, N:, X:) are ignored
         else:
             in_body = True
             body_lines.append(line)
@@ -181,6 +184,7 @@ def parse_abc_tune(abc_text):
         'mode': mode,
         'dance': dance,
         'origin': origin,
+        'composer': composer,
         'abc_body': abc_body,
     }
 
@@ -338,6 +342,7 @@ def build_folkwiki_data(parent_dir):
                 'abc_body': parsed['abc_body'],
                 'dance': parsed['dance'],
                 'origin': parsed['origin'],
+                'composer': parsed['composer'],
                 'source_url': (
                     f'http://www.folkwiki.se/Musik/{hexhash_to_pageid[hexhash]}'
                     if hexhash in hexhash_to_pageid
@@ -381,6 +386,7 @@ def build_folkwiki_data(parent_dir):
             'abc':        s['abc_body'],
             'dance':      s['dance'],
             'origin':     s['origin'],
+            'composer':   s['composer'],
             'source_url': s['source_url'],
             # contour added below
         }
