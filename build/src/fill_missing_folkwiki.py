@@ -42,16 +42,26 @@ ABC_HREF_RE = re.compile(
 )
 
 
-def fetch_with_retries(url, timeout=30, **kwargs):
+def make_session():
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'folkfriend-app-data/1.0 (+https://folkfriend-data.web.app)'
+    })
+    return session
+
+
+def fetch_with_retries(session, url, timeout=30, **kwargs):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            r = requests.get(url, timeout=timeout, **kwargs)
+            r = session.get(url, timeout=timeout, **kwargs)
+            if r.status_code == 404:
+                return r
             r.raise_for_status()
             return r
         except Exception as e:
             log.warning(f'Attempt {attempt}/{MAX_RETRIES} failed for {url}: {e}')
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_SLEEP)
+                time.sleep(RETRY_SLEEP * attempt)
     raise RuntimeError(f'Failed to fetch {url} after {MAX_RETRIES} attempts')
 
 
@@ -79,8 +89,12 @@ def process_page(page_id, target_hashes, folkwiki_dir, manifest):
     or empty list on failure.
     """
     url = f'http://www.folkwiki.se/Musik/{page_id}'
+    session = make_session()
     try:
-        r = fetch_with_retries(url, timeout=30)
+        r = fetch_with_retries(session, url, timeout=30)
+        if r.status_code == 404:
+            log.debug(f'Page {page_id}: 404')
+            return []
     except RuntimeError as e:
         log.warning(f'Page {page_id}: {e}')
         return []
@@ -110,7 +124,10 @@ def process_page(page_id, target_hashes, folkwiki_dir, manifest):
 
         try:
             log.debug(f'Downloading {abc_url}')
-            r2 = fetch_with_retries(abc_url, timeout=30)
+            r2 = fetch_with_retries(session, abc_url, timeout=30)
+            if r2.status_code == 404:
+                log.warning(f'ABC URL disappeared for page {page_id}: {abc_url}')
+                continue
             content = r2.content.decode('utf-8', errors='replace')
             if 'X:' not in content and 'T:' not in content:
                 log.warning(f'Unexpected content at {abc_url}, skipping')
@@ -204,6 +221,8 @@ def fill_missing(parent_dir):
     log.info(f'Done. {newly_downloaded} new files added, '
              f'{failed_pages} pages failed. '
              f'Manifest now has {len(manifest)} entries.')
+    coverage_pct = 100.0 * len(manifest) / len(hexhash_to_pageid)
+    log.info(f'Coverage vs page-id mapping: {len(manifest)}/{len(hexhash_to_pageid)} ({coverage_pct:.1f}%)')
 
 
 if __name__ == '__main__':

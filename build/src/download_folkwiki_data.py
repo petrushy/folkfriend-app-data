@@ -26,10 +26,20 @@ MAX_RETRIES = 3
 RETRY_SLEEP = 2  # seconds
 
 
-def fetch_with_retries(url, timeout=30, **kwargs):
+def make_session():
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'folkfriend-app-data/1.0 (+https://folkfriend-data.web.app)'
+    })
+    return session
+
+
+def fetch_with_retries(session, url, timeout=30, **kwargs):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            r = requests.get(url, timeout=timeout, **kwargs)
+            r = session.get(url, timeout=timeout, **kwargs)
+            if r.status_code == 404:
+                return r
             r.raise_for_status()
             return r
         except Exception as e:
@@ -37,7 +47,7 @@ def fetch_with_retries(url, timeout=30, **kwargs):
                 f'Attempt {attempt}/{MAX_RETRIES} failed for {url}: {e}'
             )
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_SLEEP)
+                time.sleep(RETRY_SLEEP * attempt)
     raise RuntimeError(
         f'Failed to fetch {url} after {MAX_RETRIES} attempts'
     )
@@ -51,7 +61,9 @@ def discover_via_cdx():
     log.info(
         'Querying Wayback Machine CDX for folkwiki .abc file list...'
     )
+    session = make_session()
     r = fetch_with_retries(
+        session,
         CDX_API,
         timeout=120,
         params={
@@ -126,6 +138,8 @@ def download_folkwiki_data(parent_dir, offline=False):
             )
         return
 
+    session = make_session()
+
     # --- Discover available tunes via CDX ---
     try:
         discovered = discover_via_cdx()
@@ -152,7 +166,13 @@ def download_folkwiki_data(parent_dir, offline=False):
 
         try:
             log.debug(f'Downloading {info["url"]}')
-            r = fetch_with_retries(info['url'])
+            r = fetch_with_retries(session, info['url'])
+            if r.status_code == 404:
+                log.warning(
+                    f'Skipping {hexhash} ({info["name"]}): upstream returned 404'
+                )
+                failed.append(hexhash)
+                continue
             # Force UTF-8: server returns text/plain without charset
             # declaration, so requests defaults to ISO-8859-1 and mangles
             # Swedish characters. Use raw bytes + explicit UTF-8 decode.

@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -o pipefail
 
 SCRIPT=`realpath $0`
 SCRIPTPATH=`dirname $SCRIPT`
@@ -34,25 +35,42 @@ touch $OLD_HASH
 python src/download_thesession_data.py $SCRIPTPATH
 sha1sum data/tunes.json data/aliases.json &> $NEW_HASH
 
+should_rebuild=0
+
 if cmp --silent -- "$OLD_HASH" "$NEW_HASH"
 then
     echo ""
-    echo "thesession.org data has not changed. Exiting."
+    echo "thesession.org data has not changed."
     echo ""
-    exit 1
 else
     cat $NEW_HASH > $OLD_HASH
-    python src/download_folkwiki_data.py $SCRIPTPATH --offline
-    python src/build_folkwiki_data.py $SCRIPTPATH
-    python src/build_non_user_data.py $SCRIPTPATH
-    python src/validate_output.py $SCRIPTPATH
-    mv data/folkfriend-non-user-data.json ../public/
-    mv data/nud-meta.json ../public/
-    cd ..
-    git add public/folkfriend-non-user-data.json
-    git add public/nud-meta.json
-    git commit -m "`cat public/nud-meta.json`"
-    git push
-    /usr/local/bin/firebase deploy
-    deactivate
+    should_rebuild=1
 fi
+
+python src/download_folkwiki_data.py $SCRIPTPATH --offline
+
+if ! python src/validate_output.py $SCRIPTPATH --manifest-path data/folkwiki/manifest.json --pageid-path data/folkwiki/hexhash_to_pageid.json --allow-missing-output
+then
+    echo "Existing output validation indicates Folkwiki maintenance is needed; rebuilding."
+    should_rebuild=1
+fi
+
+if [ "$should_rebuild" -eq 0 ]
+then
+    echo "No thesession or Folkwiki-triggering changes detected. Exiting."
+    deactivate
+    exit 0
+fi
+
+python src/build_folkwiki_data.py $SCRIPTPATH
+python src/build_non_user_data.py $SCRIPTPATH
+python src/validate_output.py $SCRIPTPATH --manifest-path data/folkwiki/manifest.json --pageid-path data/folkwiki/hexhash_to_pageid.json
+mv data/folkfriend-non-user-data.json ../public/
+mv data/nud-meta.json ../public/
+cd ..
+git add public/folkfriend-non-user-data.json
+git add public/nud-meta.json
+git commit -m "`cat public/nud-meta.json`"
+git push
+/usr/local/bin/firebase deploy
+deactivate

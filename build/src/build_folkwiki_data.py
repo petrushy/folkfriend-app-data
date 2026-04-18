@@ -18,6 +18,7 @@ log = logging.getLogger(os.path.basename(__file__))
 # ---------------------------------------------------------------------------
 TUNE_ID_BASE = 1_000_000
 SETTING_ID_BASE = 2_000_000
+ID_BLOCK_MULTIPLIER = 100
 
 # ---------------------------------------------------------------------------
 # ABC mode normalization
@@ -111,6 +112,65 @@ def split_abc_tunes(abc_text):
     return [t for t in tunes if t.strip()]
 
 
+def stable_folkwiki_id(hexhash, tune_block_index, base):
+    """Derive a stable numeric ID from file hash + tune-block index.
+
+    We keep Folkwiki IDs numeric because other parts of the stack parse them as
+    integers, but they must also be stable across rebuilds so user favourites
+    and links do not drift when new files are added earlier in sort order.
+
+    `hexhash` is a six-hex-digit Folkwiki source identity and
+    `tune_block_index` is the zero-based tune number within that source file.
+    """
+    if tune_block_index >= ID_BLOCK_MULTIPLIER:
+        raise ValueError(
+            f'Folkwiki file {hexhash} has {tune_block_index + 1} tune blocks; '
+            f'ID_BLOCK_MULTIPLIER={ID_BLOCK_MULTIPLIER} is too small.'
+        )
+
+    return str(base + int(hexhash, 16) * ID_BLOCK_MULTIPLIER + tune_block_index)
+
+
+def extract_primary_voice_body_lines(body_lines):
+    """Keep only the primary melody voice from a body with multiple voices.
+
+    Folkwiki often stores a melody on the upper staff (`V:1`) and an
+    accompaniment/harmony on a lower staff (`V:2`). For contour matching we
+    want the melody only; mixing both voices into one MIDI contour makes the
+    search representation much noisier than TheSession's mostly single-line
+    tunes.
+
+    Strategy:
+      - If there are no `V:` body markers, keep the body unchanged.
+      - If there are multiple voices, keep only the first voice encountered.
+      - Ignore subsequent voice sections entirely.
+    """
+    voice_re = re.compile(r'^\s*V:\s*([^\s]+)')
+
+    primary_voice = None
+    active_voice = None
+    has_voice_markers = False
+    kept = []
+
+    for line in body_lines:
+        match = voice_re.match(line)
+        if match:
+            has_voice_markers = True
+            active_voice = match.group(1)
+            if primary_voice is None:
+                primary_voice = active_voice
+            continue
+
+        if not has_voice_markers:
+            kept.append(line)
+            continue
+
+        if active_voice == primary_voice:
+            kept.append(line)
+
+    return kept if has_voice_markers else body_lines
+
+
 def parse_abc_tune(abc_text):
     """Parse a single ABC tune block and return a dict of extracted fields.
 
@@ -173,7 +233,7 @@ def parse_abc_tune(abc_text):
     if not titles or meter is None or mode is None:
         return None
 
-    abc_body = '\n'.join(body_lines).strip()
+    abc_body = '\n'.join(extract_primary_voice_body_lines(body_lines)).strip()
     if not abc_body:
         return None
 
@@ -208,9 +268,13 @@ def generate_midi_contour(args):
         f'L:{setting["note_len"].strip()}',
         f'K:{setting["mode"].strip()}',
     ]
-    abc_body = (
-        setting['abc_body'].replace('\\', '').replace('\r', '').split('\n')
-    )
+    # Strip inline chord symbols ("D", "Am", "A7", etc.) before passing to
+    # abc2midi.  abc2midi plays chord annotations as real MIDI notes on a
+    # second channel; the CSVMidiNoteReader reads all channels, so chord
+    # notes contaminate the contour and make the stored melody unrecognisable
+    # to the audio transcription pipeline.
+    abc_body_clean = re.sub(r'"[^"]*"', '', setting['abc_body'])
+    abc_body = abc_body_clean.replace('\\', '').replace('\r', '').split('\n')
     abc = '\n'.join(abc_header + abc_body)
 
     midi_out_path = os.path.join(
@@ -322,14 +386,16 @@ def build_folkwiki_data(parent_dir):
 
         tune_blocks = split_abc_tunes(abc_text)
 
-        for block in tune_blocks:
+        for tune_block_index, block in enumerate(tune_blocks):
             parsed = parse_abc_tune(block)
             if parsed is None:
                 log.debug(f'Skipping unparseable tune block in {hexhash}')
                 continue
 
-            tune_id = str(TUNE_ID_BASE + tune_counter)
-            setting_id = str(SETTING_ID_BASE + setting_counter)
+            tune_id = stable_folkwiki_id(hexhash, tune_block_index, TUNE_ID_BASE)
+            setting_id = stable_folkwiki_id(
+                hexhash, tune_block_index, SETTING_ID_BASE
+            )
             tune_counter += 1
             setting_counter += 1
 

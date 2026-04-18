@@ -86,8 +86,16 @@ class CSVMidiNoteReader(csv.DictReader):
             else:
                 music_time += note.duration
 
-            # If we're ahead, skip notes until we're back in sync
+            # If output is ahead of music, still include this note as 1 quaver.
+            # Previously this branch skipped the note entirely; that caused
+            # passing notes in dotted-rhythm patterns (A>B) to be dropped from
+            # the contour because the preceding dotted note was rounded up,
+            # pushing output_time past the short note's end.  Dropping passing
+            # notes makes stored contours diverge from audio-transcribed
+            # contours, which always retain them.
             if music_time <= output_time:
+                output_time += quaver_duration
+                midi_contour.append(note.rel_pitch())
                 continue
 
             rel_duration = (note.duration / quaver_duration)

@@ -248,7 +248,10 @@ def generate_midi_contour(args):
         'L:1/8',
         f'K:{setting["mode"].strip()}'
     ]
-    abc_body = setting['abc'].replace(
+    # Strip inline chord symbols ("D", "Am", "A7", etc.) before abc2midi.
+    # abc2midi generates real chord notes on a second MIDI channel; reading
+    # all channels contaminates the contour with accompaniment notes.
+    abc_body = re.sub(r'"[^"]*"', '', setting['abc']).replace(
         '\\', '').replace(
         '\r', '').split('\n')
     abc = '\n'.join(abc_header + abc_body)

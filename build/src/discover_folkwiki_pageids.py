@@ -27,23 +27,39 @@ MAX_ID = 6500          # 404 seen at 7000; scan a little past the last known hit
 WORKERS = 20
 TIMEOUT = 8
 HEXHASH_RE = re.compile(r'pub/cache/[^"\']+_([0-9a-f]{6})\.abc', re.IGNORECASE)
+MAX_RETRIES = 3
+
+
+def make_session():
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'folkfriend-app-data/1.0 (+https://folkfriend-data.web.app)'
+    })
+    return session
 
 
 def fetch_page(page_id):
     """Return (page_id, [hexhashes]) or (page_id, None) on 404/error."""
     url = f'http://www.folkwiki.se/Musik/{page_id}'
-    try:
-        r = requests.get(url, timeout=TIMEOUT)
-        if r.status_code == 404:
-            return page_id, None
-        if r.status_code != 200:
-            log.debug(f'{page_id}: status {r.status_code}')
-            return page_id, None
-        hashes = list(set(HEXHASH_RE.findall(r.text)))
-        return page_id, hashes
-    except Exception as e:
-        log.debug(f'{page_id}: {e}')
-        return page_id, None
+    session = make_session()
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = session.get(url, timeout=TIMEOUT)
+            if r.status_code == 404:
+                return page_id, None
+            if r.status_code != 200:
+                log.debug(f'{page_id}: status {r.status_code}')
+                if attempt < MAX_RETRIES:
+                    time.sleep(attempt)
+                    continue
+                return page_id, None
+            hashes = list(set(HEXHASH_RE.findall(r.text)))
+            return page_id, hashes
+        except Exception as e:
+            log.debug(f'{page_id}: {e}')
+            if attempt < MAX_RETRIES:
+                time.sleep(attempt)
+    return page_id, None
 
 
 def build_mapping(parent_dir):

@@ -30,6 +30,12 @@ class BuildScriptTest(unittest.TestCase):
             ['sha1sum data/tunes.json data/aliases.json &> $NEW_HASH']
         )
 
+    def test_build_runs_folkwiki_validation(self):
+        self.assertTrue(
+            any('python src/validate_output.py $SCRIPTPATH --manifest-path data/folkwiki/manifest.json --pageid-path data/folkwiki/hexhash_to_pageid.json' in line
+                for line in self.lines)
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
