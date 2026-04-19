@@ -248,12 +248,26 @@ def generate_midi_contour(args):
         'L:1/8',
         f'K:{setting["mode"].strip()}'
     ]
-    # Strip inline chord symbols ("D", "Am", "A7", etc.) before abc2midi.
-    # abc2midi generates real chord notes on a second MIDI channel; reading
-    # all channels contaminates the contour with accompaniment notes.
-    abc_body = re.sub(r'"[^"]*"', '', setting['abc']).replace(
-        '\\', '').replace(
-        '\r', '').split('\n')
+    # --- Chord stripping ---
+    # Two distinct ABC chord constructs must be removed before abc2midi,
+    # because abc2midi renders both as real MIDI notes that contaminate the
+    # melody contour read by CSVMidiNoteReader.
+    #
+    # 1. String chord symbols  "D", "Am", "A7", …
+    #    abc2midi plays these on a separate MIDI channel as accompaniment.
+    #    Strip entirely.
+    #
+    # 2. Bracket chord notes  [CEG], [A,E]2, …
+    #    abc2midi plays all voices simultaneously on the same channel.
+    #    ~5% of TheSession settings use these.
+    #    Keep only the first note (e.g. [A,E] → A,   [CEG]2 → C2).
+    #    Guard: [|  [1  [2  [K:…]  are bar/repeat/inline-header markers — skip.
+    abc_body = re.sub(r'"[^"]*"', '', setting['abc'])
+    abc_body = re.sub(
+        r'\[(?![|:\d])([=_^]?[A-Ga-g][,\']*\d*)[^\]]*\]',
+        r'\1', abc_body)
+    abc_body = re.sub(r'\{[^}]*\}', '', abc_body)  # strip grace notes
+    abc_body = abc_body.replace('\\', '').replace('\r', '').split('\n')
     abc = '\n'.join(abc_header + abc_body)
 
     midi_out_path = os.path.join(midis_path,

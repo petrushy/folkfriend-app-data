@@ -128,7 +128,8 @@ def stable_folkwiki_id(hexhash, tune_block_index, base):
             f'ID_BLOCK_MULTIPLIER={ID_BLOCK_MULTIPLIER} is too small.'
         )
 
-    return str(base + int(hexhash, 16) * ID_BLOCK_MULTIPLIER + tune_block_index)
+    offset = int(hexhash, 16) * ID_BLOCK_MULTIPLIER + tune_block_index
+    return str(base + offset)
 
 
 def extract_primary_voice_body_lines(body_lines):
@@ -268,12 +269,25 @@ def generate_midi_contour(args):
         f'L:{setting["note_len"].strip()}',
         f'K:{setting["mode"].strip()}',
     ]
-    # Strip inline chord symbols ("D", "Am", "A7", etc.) before passing to
-    # abc2midi.  abc2midi plays chord annotations as real MIDI notes on a
-    # second channel; the CSVMidiNoteReader reads all channels, so chord
-    # notes contaminate the contour and make the stored melody unrecognisable
-    # to the audio transcription pipeline.
+    # --- Chord stripping ---
+    # Two distinct ABC chord constructs must be removed before abc2midi,
+    # because abc2midi renders both as real MIDI notes that contaminate the
+    # melody contour read by CSVMidiNoteReader.
+    #
+    # 1. String chord symbols  "D", "Am", "A7", …
+    #    abc2midi plays these on a separate MIDI channel as accompaniment.
+    #    Strip entirely.
+    #
+    # 2. Bracket chord notes  [CEG], [A,E]2, …
+    #    abc2midi plays all voices simultaneously on the same channel.
+    #    ~32% of folkwiki settings use these (vs ~5% for TheSession).
+    #    Keep only the first note (e.g. [A,E] → A,   [CEG]2 → C2).
+    #    Guard: [|  [1  [2  [K:…]  are bar/repeat/inline-header markers — skip.
     abc_body_clean = re.sub(r'"[^"]*"', '', setting['abc_body'])
+    abc_body_clean = re.sub(
+        r'\[(?![|:\d])([=_^]?[A-Ga-g][,\']*\d*)[^\]]*\]',
+        r'\1', abc_body_clean)
+    abc_body_clean = re.sub(r'\{[^}]*\}', '', abc_body_clean)  # strip grace notes
     abc_body = abc_body_clean.replace('\\', '').replace('\r', '').split('\n')
     abc = '\n'.join(abc_header + abc_body)
 
