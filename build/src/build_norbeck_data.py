@@ -1,0 +1,410 @@
+"""Build the Norbeck dataset from the extracted ABC collection.
+
+Emits `data/norbeck.json` in the same `{settings, aliases}` shape as the other
+sources, so assemble_datasets.py can treat all three identically.
+
+COPYRIGHT. This collection is (c) Henrik Norbeck and carries terms:
+
+    - May not be used for commercial purposes.
+    - The ABC files (or parts of them) may not be made available on a web page
+      for download without permission from me.
+    - This copyright notice must be kept.
+    - Questions? E-mail: henrik@norbeck.nu
+
+FolkFriend is free and non-commercial, Norbeck's `Z:id` is preserved on every
+setting, the notice travels with the dataset (COPYRIGHT_NOTICE below is written
+into norbeck.json and shown in the app), and every tune links back to
+norbeck.nu. Publishing the dataset is nonetheless a redistribution and
+permission has not been granted. If he objects, removing it is deleting
+public/norbeck.json and its entry from datasets.json — clients then report it
+unavailable and keep working. See CLAUDE.md.
+"""
+
+import argparse
+import collections
+import hashlib
+import json
+import logging
+import os
+import pathlib
+import re
+import urllib.parse
+
+from abc_common import (
+    contour_for_setting,
+    decode_abc_escapes,
+    parse_abc_tune,
+    split_abc_tunes,
+    titles_to_aliases,
+)
+
+from tqdm.contrib.concurrent import process_map
+
+logging.basicConfig(level=logging.DEBUG,
+                    format='[%(name)s:%(lineno)s] %(message)s')
+log = logging.getLogger(os.path.basename(__file__))
+
+COPYRIGHT_NOTICE = (
+    'Tunes (c) Henrik Norbeck, https://www.norbeck.nu/abc/ — '
+    'transcribed by Henrik Norbeck and used here with attribution. '
+    'Not for commercial use.'
+)
+
+# ---------------------------------------------------------------------------
+# ID ranges for norbeck data.
+#
+# These must clear folkwiki, which is NOT the small block its base suggests:
+# `stable_folkwiki_id` reaches 1.68e9 in both namespaces (see
+# build_folkwiki_data.py). Hence 3e9 / 8e9 rather than the obvious 3e6 / 4e6.
+#
+# Offsets are sha1(Z:id)[:8], i.e. 0..4.29e9, so:
+#     tune_id    in [3.0e9,  7.3e9]
+#     setting_id in [8.0e9, 12.3e9]
+# Disjoint from each other, from thesession (<60k) and from folkwiki (<1.7e9),
+# and far below 2**53 (JS parseInt) and u64 (the Rust sort key).
+#
+# Hash-derived rather than enumerated so IDs stay stable across releases as
+# tunes are inserted; user favourites reference them. `Z:id` is Norbeck's own
+# per-tune identifier, is stable across releases, and he requires it be kept —
+# so it is the natural primary key.
+# ---------------------------------------------------------------------------
+NORBECK_TUNE_ID_BASE = 3_000_000_000
+NORBECK_SETTING_ID_BASE = 8_000_000_000
+
+# Z:id rhythm token -> the `rhythm` value display.asp expects.
+#
+# They agree for most families but not all, and the differences are not
+# derivable: the Z:id uses a squashed token ('slipjig', 'sp', 'jp') while the
+# site uses the human label with spaces ('slip jig', 'slängpolska', 'polska J').
+# This table was read off the site's own category navigation
+# (index2.asp?cat=i|s|m) and is verified at build time against the scraped
+# (rhythm, ref) index — see discover_norbeck_refs.py. An entry that stops
+# resolving shows up as a drop in deep-link coverage, not as a broken link.
+ZID_TO_SITE_RHYTHM = {
+    # Irish and Scottish
+    'air': 'air', 'barndance': 'barndance', 'carolan': 'carolan',
+    'countrydance': 'country dance', 'hf': 'highland', 'hornpipe': 'hornpipe',
+    'jig': 'jig', 'march': 'march', 'mazurka': 'mazurka', 'polka': 'polka',
+    'reel': 'reel', 'setdance': 'set dance', 'slide': 'slide',
+    'slipjig': 'slip jig',
+    'hp': 'slip jig',            # hop jig is listed as a slip-jig variant
+    'slowair': 'slow air', 'song': 'song', 'strathspey': 'strathspey',
+    'waltz': 'waltz',
+    # Swedish and Scandinavian
+    'ganglat': 'gånglåt', 'halling': 'halling', 'jp': 'polska J',
+    'k1': 'polska K1', 'L1': 'polska L1', 'op': 'polska O', 'sang': 'sång',
+    'schottis': 'schottis', 'sp': 'slängpolska', 'vals': 'vals',
+    # Everything else
+    'andro': 'an dro', 'bourree': 'bourree', 'buchimish': 'buchimish',
+    'cadaneasca': 'cadaneasca', 'frailach': 'frailach', 'gavotte': 'gavotte',
+    'geampara': 'geampara', 'hanterdro': 'hanter dro', 'hora': 'hora',
+    'kolo': 'kolo', 'kopanitsa': 'kopanitsa', 'misc': 'misc',
+    'miscbalkan': 'misc', 'muineira': 'muineira',
+    'paidushkohoro': 'paidushko horo', 'rachenitsa': 'rachenitsa',
+    'ridee': 'ridee', 'rond': 'rond', 'sandanskohoro': 'sandansko horo',
+    'smesenohoro': 'smeseno horo', 'musette': 'valse musette',
+    'waynu': 'waynu',
+}
+
+# Which site category each rhythm belongs to, for the index-page fallback URL.
+SITE_CATEGORY = {}
+for _r in ('air', 'barndance', 'carolan', 'country dance', 'highland',
+           'hornpipe', 'jig', 'march', 'mazurka', 'polka', 'reel', 'set dance',
+           'slide', 'slip jig', 'slow air', 'song', 'strathspey', 'waltz'):
+    SITE_CATEGORY[_r] = 'i'
+for _r in ('gånglåt', 'halling', 'polska J', 'polska K1', 'polska L1',
+           'polska O', 'sång', 'schottis', 'slängpolska', 'vals'):
+    SITE_CATEGORY[_r] = 's'
+for _r in ('an dro', 'bourree', 'buchimish', 'cadaneasca', 'frailach',
+           'gavotte', 'geampara', 'hanter dro', 'hora', 'kolo', 'kopanitsa',
+           'misc', 'muineira', 'paidushko horo', 'rachenitsa', 'ridee', 'rond',
+           'sandansko horo', 'smeseno horo', 'valse musette', 'waynu'):
+    SITE_CATEGORY[_r] = 'm'
+
+SITE_BASE = 'https://www.norbeck.nu/abc/'
+
+# Z:id values in the collection are sometimes unsubstituted templates
+# ('hn-%R-%X'), which are not identifiers at all.
+_ZID_RE = re.compile(r'^hn-(.+)-(\d+)$')
+
+# A P: line in the BODY introduces alternate material — 'variations',
+# 'Version 2', song verses. 1,062 occurrences across the collection, of which
+# over 96% are variation or version markers. abc2midi plays all of it, which
+# would make the stored contour two or three times longer than the tune and
+# mix in material a player would not play. The contour is therefore computed
+# from the body up to the first body-level P:, while the FULL body is stored
+# as `abc` — the variations are worth seeing and hearing, just not searching.
+_BODY_PART_RE = re.compile(r'(?m)^P:')
+
+
+def parse_zid(zid):
+    """'hn-reel-1' -> ('reel', '1').
+
+    None when absent or an unsubstituted template ('hn-%R-%X').
+    """
+    if not zid:
+        return None
+    m = _ZID_RE.match(zid.strip())
+    if not m:
+        return None
+    rhythm, number = m.group(1), m.group(2)
+    if '%' in rhythm:            # unsubstituted 'hn-%R-%X'
+        return None
+    return rhythm, number
+
+
+def stable_norbeck_id(key, base):
+    """Derive a stable numeric ID from a source-unique key.
+
+    `key` is the Z:id where there is one, else '<relpath>#<X number>'. One
+    setting per tune here, so unlike folkwiki there is no block multiplier.
+    """
+    offset = int(hashlib.sha1(key.encode('utf-8')).hexdigest()[:8], 16)
+    return str(base + offset)
+
+
+def source_url_for(zid_parts, valid_refs):
+    """Per-tune deep link, falling back to the rhythm's index page.
+
+    `valid_refs` is the scraped set of (site_rhythm, ref) pairs that actually
+    exist on the site; when the pair is absent the deep link would 500, so we
+    return the listing page for that rhythm instead. Never returns ''. The app
+    cannot derive a Norbeck URL from a tune ID, so every setting must carry one.
+    """
+    site_rhythm = None
+    if zid_parts:
+        site_rhythm = ZID_TO_SITE_RHYTHM.get(zid_parts[0])
+
+    if site_rhythm is None:
+        return SITE_BASE
+
+    if valid_refs is None or (site_rhythm, zid_parts[1]) in valid_refs:
+        return SITE_BASE + 'display.asp?' + urllib.parse.urlencode(
+            {'rhythm': site_rhythm, 'ref': zid_parts[1]})
+
+    cat = SITE_CATEGORY.get(site_rhythm)
+    query = {'rhythm': site_rhythm}
+    if cat:
+        query = {'cat': cat, 'rhythm': site_rhythm}
+    return SITE_BASE + 'index2.asp?' + urllib.parse.urlencode(query)
+
+
+def contour_body(abc_body):
+    """The part of the body the contour is computed from (see _BODY_PART_RE)."""
+    m = _BODY_PART_RE.search(abc_body)
+    return abc_body[:m.start()].strip() if m else abc_body
+
+
+def generate_midi_contour(args):
+    """process_map worker. Module-level so it is picklable."""
+    setting, midis_path = args
+    # `hn_` prefix keeps this cache disjoint from thesession's and folkwiki's.
+    midi_out_path = os.path.join(
+        midis_path, f'hn_{setting["setting_id"]}.midi')
+    contour = contour_for_setting(
+        abc_body=setting['contour_body'],
+        meter=setting['meter'],
+        mode=setting['mode'],
+        note_len=setting['note_len'],
+        midi_out_path=midi_out_path,
+    )
+    return setting['setting_id'], contour
+
+
+def build_norbeck_data(parent_dir):
+    norbeck_dir = os.path.join(parent_dir, 'data', 'norbeck')
+    abc_dir = os.path.join(norbeck_dir, 'abc')
+    manifest_path = os.path.join(norbeck_dir, 'manifest.json')
+    refs_path = os.path.join(norbeck_dir, 'site_refs.json')
+    midis_dir = os.path.join(norbeck_dir, 'midis')
+    output_path = os.path.join(parent_dir, 'data', 'norbeck.json')
+
+    pathlib.Path(midis_dir).mkdir(parents=True, exist_ok=True)
+
+    if not os.path.exists(manifest_path):
+        log.error(f'No manifest at {manifest_path}. '
+                  'Run download_norbeck_data.py first.')
+        return 1
+
+    with open(manifest_path, encoding='utf-8') as f:
+        manifest = json.load(f)
+    log.info(f'Building from release {manifest["release"]} '
+             f'({len(manifest["files"])} ABC files)')
+
+    valid_refs = None
+    if os.path.exists(refs_path):
+        with open(refs_path, encoding='utf-8') as f:
+            valid_refs = {(r, str(n)) for r, ns in json.load(f).items()
+                          for n in ns}
+        log.info(f'Loaded {len(valid_refs)} verified site (rhythm, ref) pairs')
+    else:
+        log.warning(
+            f'No {refs_path}; emitting deep links unverified. '
+            'Run discover_norbeck_refs.py to check them.')
+
+    raw_settings = []
+    raw_aliases = {}
+    seen_keys = collections.Counter()
+    stats = collections.Counter()
+
+    for rel in manifest['files']:
+        abc_path = os.path.join(abc_dir, rel)
+        if not os.path.exists(abc_path):
+            log.warning(f'Missing file {rel}, skipping')
+            continue
+
+        # The collection is ASCII/UTF-8 throughout, but decode explicitly and
+        # tolerantly rather than trusting the locale — folkwiki's mojibake came
+        # from exactly that assumption going unstated.
+        with open(abc_path, 'rb') as f:
+            data = f.read()
+        try:
+            abc_text = data.decode('utf-8')
+        except UnicodeDecodeError:
+            log.warning(f'{rel} is not UTF-8; falling back to cp1252')
+            abc_text = data.decode('cp1252', errors='replace')
+            stats['non_utf8_files'] += 1
+
+        for block_index, block in enumerate(split_abc_tunes(abc_text)):
+            # Each file opens with a preamble (the copyright notice and a
+            # description) before the first X:. It becomes block 0 and has no
+            # T:/M:/K:, so parse_abc_tune rejects it.
+            parsed = parse_abc_tune(block, extra_fields=('Z', 'S'))
+            if parsed is None:
+                stats['unparseable_blocks'] += 1
+                continue
+
+            zid_raw = (parsed['extra']['Z'] or [''])[0]
+            # Z: is 'id:hn-reel-1'; parse_abc_tune strips the field letter.
+            if zid_raw.lower().startswith('id:'):
+                zid_raw = zid_raw[3:]
+            zid_parts = parse_zid(zid_raw)
+
+            if zid_parts:
+                key = f'hn-{zid_parts[0]}-{zid_parts[1]}'
+            else:
+                # 57 blocks carry a template placeholder or no Z: at all.
+                key = f'{rel}#{block_index}'
+                stats['no_usable_zid'] += 1
+
+            # Eight Z:ids are duplicated in the collection. Disambiguate
+            # deterministically so IDs stay unique AND stable: the manifest
+            # file list is sorted and block order is fixed, so the same tune
+            # gets the same suffix on every rebuild.
+            seen_keys[key] += 1
+            if seen_keys[key] > 1:
+                stats['duplicate_zid'] += 1
+                key = f'{key}#{seen_keys[key]}'
+
+            tune_id = stable_norbeck_id(key, NORBECK_TUNE_ID_BASE)
+            setting_id = stable_norbeck_id(key, NORBECK_SETTING_ID_BASE)
+
+            body = parsed['abc_body']
+            trimmed = contour_body(body)
+            if len(trimmed) != len(body):
+                stats['trimmed_variations'] += 1
+
+            origin = parsed['origin'] or (parsed['extra']['S'] or [''])[0]
+
+            # The collection is 7-bit ASCII and spells every accented letter as
+            # an ABC escape (`sl\"angpolska`). Decode header-derived text or
+            # every Swedish and Irish title is stored as backslash noise and
+            # cannot be found by searching for the name a user would type.
+            note_len = parsed['note_len'] if parsed['has_note_len'] else None
+            raw_settings.append({
+                'setting_id': setting_id,
+                'tune_id': tune_id,
+                'meter': parsed['meter'],
+                'mode': parsed['mode'],
+                # None when the source has no L:, so abc2midi applies the ABC
+                # standard default. 45% of the collection relies on this.
+                'note_len': note_len,
+                'abc_body': body,
+                'contour_body': trimmed,
+                'dance': decode_abc_escapes(parsed['dance']),
+                'origin': decode_abc_escapes(origin),
+                'composer': decode_abc_escapes(parsed['composer']),
+                'source_url': source_url_for(zid_parts, valid_refs),
+                # Norbeck's own per-tune identifier. His terms require the
+                # Z:id line be kept when a tune is passed on; the stored `abc`
+                # is body-only by schema, so it is carried as a field instead.
+                'zid': key,
+            })
+            raw_aliases[tune_id] = titles_to_aliases(
+                [decode_abc_escapes(t) for t in parsed['titles']])
+
+    log.info(f'Parsed {len(raw_settings)} settings from Norbeck ABC files')
+    for k, v in sorted(stats.items()):
+        log.info(f'  {k}: {v}')
+
+    # IDs must be globally unique or one tune silently shadows another in the
+    # merged index. Collision chance is ~1e-3 across 3.5k tunes, so this is a
+    # real if unlikely event and must fail the build rather than warn.
+    for name, ids in (('tune_id', [s['tune_id'] for s in raw_settings]),
+                      ('setting_id', [s['setting_id'] for s in raw_settings])):
+        dupes = [i for i, n in collections.Counter(ids).items() if n > 1]
+        if dupes:
+            raise SystemExit(
+                f'FATAL: {len(dupes)} duplicate norbeck {name}s '
+                f'(e.g. {dupes[:5]}). Two source keys hashed to the same '
+                'offset; widen the hash slice in stable_norbeck_id.')
+
+    contours = process_map(
+        generate_midi_contour,
+        [(s, midis_dir) for s in raw_settings],
+        desc='Generating norbeck MIDI contours',
+        chunksize=8,
+    )
+
+    settings = {}
+    for s in raw_settings:
+        settings[s['setting_id']] = {
+            'tune_id':    s['tune_id'],
+            'meter':      s['meter'],
+            'mode':       s['mode'],
+            'abc':        s['abc_body'],
+            'dance':      s['dance'],
+            'origin':     s['origin'],
+            'composer':   s['composer'],
+            'source_url': s['source_url'],
+            'zid':        s['zid'],
+        }
+
+    empty_contours = 0
+    for setting_id, contour in contours:
+        settings[setting_id]['contour'] = contour
+        if not contour:
+            empty_contours += 1
+
+    total = len(contours)
+    log.info(
+        f'norbeck contours: {total - empty_contours}/{total} non-empty '
+        f'({empty_contours} failed, {100 * empty_contours / total:.1f}%)'
+    )
+
+    deep = sum(1 for s in raw_settings if 'display.asp' in s['source_url'])
+    log.info(f'source_url: {deep}/{total} per-tune deep links '
+             f'({100 * deep / total:.1f}%), remainder are index pages')
+
+    output = {
+        'settings': settings,
+        'aliases': raw_aliases,
+        'copyright': COPYRIGHT_NOTICE,
+        'release': manifest['release'],
+    }
+
+    log.info(f'Writing {output_path}')
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output, f, ensure_ascii=False)
+
+    log.info(f'Done. {len(settings)} norbeck settings written.')
+    return 0
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description="Build the Norbeck dataset from downloaded ABC files")
+    parser.add_argument(
+        'dir', help='Parent directory for the `data` directory')
+    args = parser.parse_args()
+    raise SystemExit(build_norbeck_data(args.dir))

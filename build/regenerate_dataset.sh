@@ -8,6 +8,7 @@ cd "$SCRIPTPATH"
 DEPLOY=0
 SKIP_PAGEIDS=0
 SKIP_FILL_MISSING=0
+SKIP_NORBECK_REFS=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -23,22 +24,30 @@ while [[ $# -gt 0 ]]; do
             SKIP_FILL_MISSING=1
             shift
             ;;
+        --skip-norbeck-refs)
+            SKIP_NORBECK_REFS=1
+            shift
+            ;;
         -h|--help)
             cat <<'EOF'
 Usage: bash build/regenerate_dataset.sh [options]
 
-Refreshes the full dataset from upstream sources:
+Refreshes every dataset from upstream sources, ignoring change detection:
   1. Downloads TheSession data
   2. Downloads live Folkwiki ABC files
   3. Rebuilds Folkwiki page-id mappings
   4. Fills missing Folkwiki entries missed by CDX
-  5. Rebuilds merged output JSON files
-  6. Validates the generated dataset
+  5. Downloads Norbeck's ABC collection
+  6. Refreshes Norbeck's display.asp (rhythm, ref) index
+  7. Rebuilds all three dataset files
+  8. Assembles datasets.json and the legacy merged bundle
+  9. Validates everything
 
 Options:
   --deploy             Copy outputs to public/ and run firebase deploy --only hosting
   --skip-pageids       Skip discover_folkwiki_pageids.py
   --skip-fill-missing  Skip fill_missing_folkwiki.py
+  --skip-norbeck-refs  Skip discover_norbeck_refs.py
   -h, --help           Show this help text
 EOF
             exit 0
@@ -77,11 +86,30 @@ else
     echo "==> Skipping fill_missing_folkwiki.py"
 fi
 
-echo "==> Building Folkwiki processed data"
+echo "==> Downloading Norbeck collection"
+python src/download_norbeck_data.py .
+
+if [[ "$SKIP_NORBECK_REFS" -eq 0 ]]; then
+    # Norbeck's per-tune pages are display.asp?rhythm=X&ref=N, and a wrong ref
+    # returns HTTP 500 rather than 404. This snapshot is what lets the builder
+    # emit a deep link only when the pair really exists.
+    echo "==> Refreshing Norbeck display.asp ref index"
+    python src/discover_norbeck_refs.py .
+else
+    echo "==> Skipping discover_norbeck_refs.py"
+fi
+
+echo "==> Building TheSession dataset"
+python src/build_thesession_data.py .
+
+echo "==> Building Folkwiki dataset"
 python src/build_folkwiki_data.py .
 
-echo "==> Building merged non-user data"
-python src/build_non_user_data.py .
+echo "==> Building Norbeck dataset"
+python src/build_norbeck_data.py .
+
+echo "==> Assembling published files"
+python src/assemble_datasets.py .
 
 echo "==> Validating output"
 python src/validate_output.py . \
@@ -90,8 +118,10 @@ python src/validate_output.py . \
 
 if [[ "$DEPLOY" -eq 1 ]]; then
     echo "==> Copying outputs to public/"
-    cp data/folkfriend-non-user-data.json ../public/
-    cp data/nud-meta.json ../public/
+    for f in datasets.json thesession.json folkwiki.json norbeck.json \
+             folkfriend-non-user-data.json nud-meta.json; do
+        cp "data/$f" ../public/
+    done
 
     echo "==> Deploying to Firebase Hosting"
     (
@@ -102,5 +132,7 @@ fi
 
 echo "==> Done"
 echo "Generated files:"
-echo "  $SCRIPTPATH/data/folkfriend-non-user-data.json"
-echo "  $SCRIPTPATH/data/nud-meta.json"
+for f in datasets.json thesession.json folkwiki.json norbeck.json \
+         folkfriend-non-user-data.json nud-meta.json; do
+    echo "  $SCRIPTPATH/data/$f"
+done

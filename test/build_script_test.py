@@ -1,40 +1,92 @@
+"""Ordering invariants of build.sh, checked at the text level.
+
+These are cheap guards on a script that is only ever run by hand against live
+data, where getting the order wrong deploys a broken dataset rather than
+failing a test. The assertions are deliberately about *relative order* and
+*presence*, not exact command strings, so ordinary edits to the script do not
+break them — the previous version asserted on three literal lines and broke the
+moment the script was touched.
+"""
+
 import pathlib
+import re
 import unittest
+
+DATASETS = ('thesession', 'folkwiki', 'norbeck')
 
 
 class BuildScriptTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         repo_root = pathlib.Path(__file__).resolve().parents[1]
-        cls.build_script = repo_root / 'build' / 'build.sh'
-        cls.lines = cls.build_script.read_text(encoding='utf-8').splitlines()
+        cls.script = (repo_root / 'build' / 'build.sh').read_text(
+            encoding='utf-8')
+        cls.lines = cls.script.splitlines()
 
-    def test_hash_is_computed_after_download(self):
-        download_idx = next(
+    def index_of(self, pattern):
+        rx = re.compile(pattern)
+        for i, line in enumerate(self.lines):
+            if rx.search(line):
+                return i
+        self.fail(f'build.sh has no line matching {pattern!r}')
+
+    def test_every_dataset_is_downloaded_then_hashed(self):
+        # Change detection must run on freshly downloaded inputs, or a build
+        # skips itself on the strength of last run's files.
+        for ds in DATASETS:
+            download = self.index_of(rf'download_{ds}_data\.py')
+            check = self.index_of(rf'check_changed {ds}\b')
+            self.assertGreater(
+                check, download,
+                f'{ds}: change detection must come after its download')
+
+    def test_change_detection_covers_every_dataset(self):
+        # The original build.sh hashed only thesession's inputs, so a folkwiki
+        # or norbeck update could never trigger a rebuild.
+        for ds in DATASETS:
+            self.index_of(rf'check_changed {ds}\b')
+
+    def test_each_builder_is_gated_on_its_own_dataset(self):
+        # Rebuilding an unchanged dataset bumps its version and forces every
+        # client to re-download it — 35 MB in thesession's case.
+        for ds in DATASETS:
+            line = self.lines[self.index_of(rf'build_{ds}_data\.py')]
+            self.assertIn(
+                f'CHANGED[{ds}]', line,
+                f'{ds}: builder must be gated on CHANGED[{ds}]')
+
+    def test_assemble_runs_after_all_builders(self):
+        assemble = self.index_of(r'assemble_datasets\.py')
+        for ds in DATASETS:
+            self.assertGreater(
+                assemble, self.index_of(rf'build_{ds}_data\.py'),
+                f'assemble_datasets must run after the {ds} builder')
+
+    def test_validation_runs_before_publishing(self):
+        # set -e plus this ordering is what stops a bad dataset reaching
+        # public/ and then Firebase.
+        validate = max(
             i for i, line in enumerate(self.lines)
-            if 'python src/download_thesession_data.py $SCRIPTPATH' in line
+            if 'validate_output.py' in line
         )
-        hash_idx = next(
-            i for i, line in enumerate(self.lines)
-            if 'sha1sum data/tunes.json data/aliases.json &> $NEW_HASH' in line
-        )
-        self.assertGreater(hash_idx, download_idx)
+        publish = self.index_of(r'mv "data/\$f" \.\./public/')
+        self.assertGreater(
+            publish, validate,
+            'output must not reach public/ before it is validated')
 
-    def test_hash_uses_downloaded_thesession_inputs(self):
-        hash_lines = [
-            line for line in self.lines
-            if 'sha1sum ' in line and '$NEW_HASH' in line
-        ]
-        self.assertEqual(
-            hash_lines,
-            ['sha1sum data/tunes.json data/aliases.json &> $NEW_HASH']
-        )
+    def test_deploy_runs_last(self):
+        publish = self.index_of(r'mv "data/\$f" \.\./public/')
+        deploy = self.index_of(r'^firebase deploy')
+        self.assertGreater(deploy, publish)
 
-    def test_build_runs_folkwiki_validation(self):
-        self.assertTrue(
-            any('python src/validate_output.py $SCRIPTPATH --manifest-path data/folkwiki/manifest.json --pageid-path data/folkwiki/hexhash_to_pageid.json' in line
-                for line in self.lines)
-        )
+    def test_publishes_every_expected_file(self):
+        # datasets.json and the legacy bundle are both required: new clients
+        # read the former, installed PWAs that never updated read the latter.
+        for name in ('datasets.json', 'thesession.json', 'folkwiki.json',
+                     'norbeck.json', 'folkfriend-non-user-data.json',
+                     'nud-meta.json'):
+            self.assertIn(name, self.script,
+                          f'build.sh never publishes {name}')
 
 
 if __name__ == '__main__':
