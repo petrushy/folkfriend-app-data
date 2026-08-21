@@ -1,12 +1,14 @@
 """Assemble the per-dataset build products into the files served to the app.
 
 Inputs  (data/):  thesession.json, folkwiki.json, norbeck.json
-Outputs (data/):  datasets.json
-                  thesession.json, folkwiki.json, norbeck.json  (passed through)
-                  folkfriend-non-user-data.json                 (legacy merged)
-                  nud-meta.json                                 (legacy meta)
+Outputs (data/):  datasets.json                  (published datasets only)
+                  thesession.json, folkwiki.json (stamped, published)
+                  norbeck.json                   (stamped, NOT published)
+                  folkfriend-non-user-data.json  (legacy merged)
+                  nud-meta.json                  (legacy meta)
+                  PUBLISHED_FILES.txt            (what build.sh may deploy)
 
-Two things here are deliberate and easy to get wrong later.
+Three things here are deliberate and easy to get wrong later.
 
 **The legacy merged file is still published, and excludes norbeck.** Installed
 PWAs that have not updated fetch `folkfriend-non-user-data.json` and know
@@ -15,6 +17,13 @@ they also cannot turn a dataset OFF, and Norbeck's collection carries
 redistribution terms — pushing it to clients that have no say is the one place
 the exposure would be involuntary. So the merged file remains thesession +
 folkwiki, exactly as it is today.
+
+**Norbeck is built but not published.** His terms forbid making the ABC files
+available for download on a web page. The dataset is still built and stamped so
+it can be imported by hand (Settings → "Add a database"), but nothing serves it
+and it is absent from `datasets.json`. `PUBLISHED_FILES.txt` is the single
+source of truth for what may be copied to `public/`, so build.sh cannot deploy
+it by accident.
 
 **`nud-meta.json` is generated FROM `datasets.json`.** Two manifests describing
 the same pipeline will drift the moment they are produced independently, and
@@ -35,11 +44,31 @@ log = logging.getLogger(os.path.basename(__file__))
 # The manifest is a contract with the app: `id` is what userSettings stores and
 # what IndexedDB keys are namespaced by, so these strings must never change
 # once shipped. `filename` may.
+#
+# `published: False` means the dataset is BUILT and stamped as usual but is not
+# copied to public/ and does not appear in datasets.json. Nothing serves it; the
+# only way into the app is Settings → "Add a database", by file or by a URL the
+# user supplies. That is how Norbeck is handled: his terms forbid making the ABC
+# files available for download on a web page, so FolkFriend hosts nothing and
+# stays out of the distribution chain entirely.
 DATASETS = (
-    {'id': 'thesession', 'filename': 'thesession.json', 'source': 'thesession.json'},
-    {'id': 'folkwiki',   'filename': 'folkwiki.json',   'source': 'folkwiki.json'},
-    {'id': 'norbeck',    'filename': 'norbeck.json',    'source': 'norbeck.json'},
+    {'id': 'thesession', 'filename': 'thesession.json',
+     'source': 'thesession.json', 'published': True,
+     'label': 'The Session',
+     'description': 'Irish and session tunes from thesession.org'},
+    {'id': 'folkwiki', 'filename': 'folkwiki.json',
+     'source': 'folkwiki.json', 'published': True,
+     'label': 'Folkwiki',
+     'description': 'Swedish folk music from folkwiki.se'},
+    {'id': 'norbeck', 'filename': 'norbeck.json',
+     'source': 'norbeck.json', 'published': False,
+     'label': 'Norbeck',
+     'description': 'Henrik Norbeck\u2019s Irish and Swedish collection'},
 )
+
+# Written next to the outputs so build.sh knows exactly which files may be
+# deployed, rather than repeating the list and letting the two drift.
+PUBLISHED_LIST_NAME = 'PUBLISHED_FILES.txt'
 
 # Which datasets the pre-multi-dataset app expects to find in one blob.
 LEGACY_MERGED_IDS = ('thesession', 'folkwiki')
@@ -73,6 +102,7 @@ def assemble(parent_dir, out_dir=None, version_overrides=None):
     today = date.today()
 
     entries = []
+    unpublished = []
     loaded = {}
 
     for spec in DATASETS:
@@ -96,10 +126,19 @@ def assemble(parent_dir, out_dir=None, version_overrides=None):
 
         loaded[spec['id']] = payload
 
+        # Stamp the file so it is SELF-DESCRIBING. A published dataset is
+        # described by its datasets.json entry, but a file the user imports by
+        # hand has no manifest entry — the app has to learn its id, name and
+        # version from the file itself.
+        payload['id'] = spec['id']
+        payload['label'] = spec['label']
+        payload['description'] = spec['description']
+        payload['v'] = version_overrides.get(spec['id'], days_since_2020(today))
+        payload['date'] = today.strftime('%Y-%m-%d')
+
         out_path = os.path.join(out_dir, spec['filename'])
-        if os.path.abspath(out_path) != os.path.abspath(path):
-            with open(out_path, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, ensure_ascii=False)
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
 
         # `size` is the UNCOMPRESSED byte count and the app prefers it over
         # Content-Length for the download progress bar — Firebase gzips JSON,
@@ -108,22 +147,29 @@ def assemble(parent_dir, out_dir=None, version_overrides=None):
         entry = {
             'id': spec['id'],
             'filename': spec['filename'],
-            'v': version_overrides.get(spec['id'], days_since_2020(today)),
-            'date': today.strftime('%Y-%m-%d'),
+            'v': payload['v'],
+            'date': payload['date'],
             'size': os.path.getsize(out_path),
             'settings': len(settings),
             'tunes': len(aliases),
         }
         if payload.get('copyright'):
             entry['copyright'] = payload['copyright']
-        entries.append(entry)
+
+        published = spec.get('published', True)
+        if published:
+            entries.append(entry)
+        else:
+            unpublished.append(entry)
         log.info(
             f'{spec["id"]}: {entry["settings"]} settings, {entry["tunes"]} '
             f'tunes, {entry["size"] / 1e6:.1f} MB, v{entry["v"]}'
+            f'{"" if published else "  [NOT PUBLISHED — import by hand]"}'
         )
 
     if not entries:
-        raise SystemExit('FATAL: no dataset files found; nothing to assemble.')
+        raise SystemExit(
+            'FATAL: no publishable dataset files found; nothing to assemble.')
 
     # An ID appearing in two datasets means one setting silently shadows
     # another once the app merges them. Disjointness is guaranteed by the ID
@@ -142,6 +188,19 @@ def assemble(parent_dir, out_dir=None, version_overrides=None):
     log.info(f'Wrote {manifest_path}')
 
     write_legacy_bundle(loaded, entries, out_dir)
+
+    # The exact set of files build.sh may deploy. Anything not in here — the
+    # unpublished datasets — stays in data/ and is never served.
+    published_files = [MANIFEST_NAME, LEGACY_MERGED_NAME, LEGACY_META_NAME]
+    published_files += [e['filename'] for e in entries]
+    with open(os.path.join(out_dir, PUBLISHED_LIST_NAME), 'w') as f:
+        f.write('\n'.join(published_files) + '\n')
+
+    if unpublished:
+        log.warning(
+            'NOT published: %s. These are built for local/manual use only and '
+            'must not be copied to public/.',
+            ', '.join(f'{e["id"]} ({e["filename"]})' for e in unpublished))
     return 0
 
 

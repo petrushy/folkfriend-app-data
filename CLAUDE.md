@@ -369,7 +369,25 @@ Folkwiki wiki pages use numeric IDs in URLs: `http://www.folkwiki.se/Musik/4237`
 [Henrik Norbeck's ABC collection](https://www.norbeck.nu/abc/) — 3,472 settings
 of mostly Irish and Swedish traditional music — published as `norbeck.json`.
 
-### ⚠️ Copyright: read this first
+### ⚠️ NOT PUBLISHED — imported by hand
+
+Norbeck's terms forbid making the ABC files available for download on a web
+page, so **this dataset is built but never served**. It is absent from
+`datasets.json` and from `public/`; `assemble_datasets.py` marks it
+`published: False` and writes `PUBLISHED_FILES.txt`, which `build.sh` obeys —
+plus an explicit guard that fails the build if `public/norbeck.json` ever
+appears. `validate_output.py` checks both.
+
+The built `build/data/norbeck.json` is stamped self-describing (`id`, `label`,
+`v`, `date`) and is loaded into the app by hand: **Settings → "Add a database"**,
+from a file or from a URL you supply. FolkFriend hosts nothing and is not in the
+distribution chain.
+
+If you host it somewhere yourself to sync your own devices, note that is still
+you making it available for download — obscurity, not permission — and that the
+app's URL import needs the host to send `Access-Control-Allow-Origin`.
+
+### ⚠️ Copyright: the underlying terms
 
 His stated terms ([AboutTunes.asp](https://www.norbeck.nu/abc/AboutTunes.asp)):
 

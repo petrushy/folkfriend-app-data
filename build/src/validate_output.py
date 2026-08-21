@@ -48,6 +48,9 @@ DATASETS = {
     },
 }
 
+# Datasets that are built but must never be served. See assemble_datasets.py.
+UNPUBLISHED = ('norbeck',)
+
 # The legacy merged bundle still shipped for clients predating dataset
 # selection. It is thesession + folkwiki and must never contain norbeck.
 LEGACY_MERGED_IDS = ('thesession', 'folkwiki')
@@ -193,6 +196,10 @@ def validate_manifest(path, loaded, errors):
                     f'datasets.json entry {entry.get("id")!r} missing '
                     f'"{field}".')
         ds_id = entry.get('id')
+        if ds_id in UNPUBLISHED:
+            errors.append(
+                f'{ds_id} is listed in datasets.json but must not be '
+                'published. See assemble_datasets.py.')
         payload = loaded.get(ds_id)
         if payload is not None and entry.get('settings') != len(
                 payload['settings']):
@@ -305,6 +312,16 @@ def validate_folkwiki_cache(folkwiki_dir, manifest_path, pageid_path, errors):
                 'stale entries.')
 
 
+def check_unpublished_absent(out_dir, errors):
+    """An unpublished dataset must not be sitting in the deploy directory."""
+    for ds_id in UNPUBLISHED:
+        path = os.path.join(out_dir, f'{ds_id}.json')
+        if os.path.exists(path):
+            errors.append(
+                f'{path} exists but {ds_id} must not be published. Nothing may '
+                'serve it; it is imported by hand in the app.')
+
+
 def validate(parent_dir, manifest_path=None, pageid_path=None,
              allow_missing_output=False, only_dataset=None):
     data_dir = os.path.join(parent_dir, 'data')
@@ -345,6 +362,8 @@ def validate(parent_dir, manifest_path=None, pageid_path=None,
         elif not allow_missing_output:
             errors.append(f'datasets.json not found at {manifest}')
         validate_legacy_bundle(data_dir, loaded, errors)
+        check_unpublished_absent(
+            os.path.join(parent_dir, '..', 'public'), errors)
 
     if errors:
         log.error('VALIDATION FAILED:')

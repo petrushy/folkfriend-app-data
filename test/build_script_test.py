@@ -79,14 +79,30 @@ class BuildScriptTest(unittest.TestCase):
         deploy = self.index_of(r'^firebase deploy')
         self.assertGreater(deploy, publish)
 
-    def test_publishes_every_expected_file(self):
-        # datasets.json and the legacy bundle are both required: new clients
-        # read the former, installed PWAs that never updated read the latter.
-        for name in ('datasets.json', 'thesession.json', 'folkwiki.json',
-                     'norbeck.json', 'folkfriend-non-user-data.json',
-                     'nud-meta.json'):
-            self.assertIn(name, self.script,
-                          f'build.sh never publishes {name}')
+    def test_publishes_only_what_the_build_declared(self):
+        # build.sh used to name each output file literally, which meant the
+        # list could drift from what assemble_datasets actually produced — and
+        # the way it would drift is by publishing something that must not be.
+        # It now reads PUBLISHED_FILES.txt, which the build writes.
+        self.index_of(r'PUBLISHED_FILES\.txt')
+        publish = self.index_of(r'mv "data/\$f" \.\./public/')
+        reads_list = self.index_of(r'< data/PUBLISHED_FILES\.txt')
+        self.assertGreater(
+            reads_list, publish - 3,
+            'the publish loop must be driven by PUBLISHED_FILES.txt')
+
+    def test_refuses_to_publish_an_unpublished_dataset(self):
+        # Norbeck may not be made available for download. A guard in the script
+        # is the last line of defence if the list is ever wrong.
+        self.assertIn('norbeck.json', self.script,
+                      'build.sh has no guard against publishing norbeck')
+        guard = self.index_of(r'is not publishable')
+        publish = self.index_of(r'mv "data/\$f" \.\./public/')
+        self.assertGreater(guard, publish,
+                           'the guard must run after files are moved')
+        deploy = self.index_of(r'^firebase deploy')
+        self.assertLess(guard, deploy,
+                        'the guard must run before the deploy')
 
 
 if __name__ == '__main__':

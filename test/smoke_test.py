@@ -15,6 +15,7 @@ Run from any directory:
 import json
 import sys
 import urllib.request
+import urllib.error
 import os
 
 PASS = "\033[32mPASS\033[0m"
@@ -116,9 +117,11 @@ EXPECTED = {
                    "needs_source_url": False, "origin_empty": True},
     "folkwiki":   {"min_settings": 5_000,  "min_aliases": 5_000,
                    "needs_source_url": True,  "origin_empty": False},
-    "norbeck":    {"min_settings": 3_000,  "min_aliases": 3_000,
-                   "needs_source_url": True,  "origin_empty": False},
 }
+
+# Built, but never served — Norbeck's terms forbid making the ABC files
+# available for download on a web page. It is imported by hand in the app.
+UNPUBLISHED = ("norbeck",)
 
 REQUIRED_FIELDS = {"tune_id", "meter", "mode", "abc", "dance", "contour", "origin"}
 MODE_SUFFIXES = ("major", "minor", "dorian", "mixolydian", "lydian",
@@ -201,6 +204,26 @@ if "folkwiki" in loaded:
     check("folkwiki has Swedish dance types (polska/vals/schottis/…)",
           any(d in dances for d in ("polska", "vals", "schottis", "hambo", "gånglåt")),
           f"found: {sorted(dances)[:10]}")
+
+# An unpublished dataset must not be sitting in the deploy directory, and must
+# not be reachable on the live site. This is the check that actually enforces
+# the licensing position; everything else is bookkeeping.
+for ds_id in UNPUBLISHED:
+    local = os.path.join(public_dir, f"{ds_id}.json")
+    check(f"{ds_id}.json is NOT in public/", not os.path.exists(local),
+          f"{local} exists and would be deployed")
+    try:
+        req = urllib.request.Request(
+            f"https://folkfriend-data.web.app/{ds_id}.json", method="HEAD")
+        urllib.request.urlopen(req, timeout=15)
+        check(f"{ds_id}.json is NOT served", False, "it returned 200")
+    except urllib.error.HTTPError as e:
+        check(f"{ds_id}.json is NOT served", e.code == 404, f"HTTP {e.code}")
+    except Exception as e:
+        check(f"{ds_id}.json is NOT served", False, str(e))
+    check(f"{ds_id} is NOT in datasets.json",
+          all(e.get("id") != ds_id for e in entries))
+
 
 # The legacy bundle is still fetched by installed apps that predate dataset
 # selection. It must exist, and must NOT contain norbeck — those clients cannot

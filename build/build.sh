@@ -142,9 +142,25 @@ python src/validate_output.py $SCRIPTPATH \
     --manifest-path data/folkwiki/manifest.json \
     --pageid-path data/folkwiki/hexhash_to_pageid.json
 
-for f in datasets.json thesession.json folkwiki.json norbeck.json \
-         folkfriend-non-user-data.json nud-meta.json; do
+# ONLY what assemble_datasets declared publishable. Norbeck is built but never
+# served — see the note in assemble_datasets.py — and reading the list from the
+# build rather than repeating it here is what stops the two drifting apart and
+# quietly deploying it.
+if [[ ! -f data/PUBLISHED_FILES.txt ]]; then
+    echo "assemble_datasets.py did not write data/PUBLISHED_FILES.txt" >&2
+    exit 1
+fi
+while read -r f; do
+    [[ -z "$f" ]] && continue
     [[ -f "data/$f" ]] && mv "data/$f" ../public/
+done < data/PUBLISHED_FILES.txt
+
+# Belt and braces: an unpublished dataset must never be sitting in public/.
+for f in norbeck.json; do
+    if [[ -f "../public/$f" ]]; then
+        echo "FATAL: ../public/$f exists but is not publishable" >&2
+        exit 1
+    fi
 done
 
 cd ..
