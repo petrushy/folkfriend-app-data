@@ -14,6 +14,10 @@ import unittest
 
 DATASETS = ('thesession', 'folkwiki', 'norbeck')
 
+# Both entry points deploy, so both need the unpublished-file protection.
+# regenerate_dataset.sh had it added second and was missed the first time.
+SCRIPTS = ('build.sh', 'regenerate_dataset.sh')
+
 
 class BuildScriptTest(unittest.TestCase):
     @classmethod
@@ -103,6 +107,36 @@ class BuildScriptTest(unittest.TestCase):
         deploy = self.index_of(r'^firebase deploy')
         self.assertLess(guard, deploy,
                         'the guard must run before the deploy')
+
+
+class DeployScriptsTest(unittest.TestCase):
+    """Every script that copies into public/ must obey PUBLISHED_FILES.txt."""
+
+    def test_no_script_publishes_a_hardcoded_file_list(self):
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        for name in SCRIPTS:
+            script = (repo_root / 'build' / name).read_text(encoding='utf-8')
+            with self.subTest(script=name):
+                self.assertIn(
+                    'PUBLISHED_FILES.txt', script,
+                    f'{name} does not consult PUBLISHED_FILES.txt, so it can '
+                    'publish a dataset that must not be served')
+                self.assertIn(
+                    'is not publishable', script,
+                    f'{name} has no guard against an unpublished dataset '
+                    'reaching public/')
+
+    def test_no_script_copies_norbeck_by_name(self):
+        # The exact bug: `cp data/norbeck.json ../public/` in a literal list.
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        copy_re = re.compile(
+            r'(cp|mv)\s+[^\n]*norbeck\.json[^\n]*public', re.IGNORECASE)
+        for name in SCRIPTS:
+            script = (repo_root / 'build' / name).read_text(encoding='utf-8')
+            with self.subTest(script=name):
+                self.assertIsNone(
+                    copy_re.search(script),
+                    f'{name} copies norbeck.json into public/')
 
 
 if __name__ == '__main__':

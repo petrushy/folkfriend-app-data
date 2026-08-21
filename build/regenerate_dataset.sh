@@ -118,9 +118,23 @@ python src/validate_output.py . \
 
 if [[ "$DEPLOY" -eq 1 ]]; then
     echo "==> Copying outputs to public/"
-    for f in datasets.json thesession.json folkwiki.json norbeck.json \
-             folkfriend-non-user-data.json nud-meta.json; do
-        cp "data/$f" ../public/
+    # ONLY what assemble_datasets declared publishable — same rule as build.sh.
+    # This used to name the files literally and so happily published Norbeck,
+    # which must never be served (see assemble_datasets.py).
+    if [[ ! -f data/PUBLISHED_FILES.txt ]]; then
+        echo "assemble_datasets.py did not write data/PUBLISHED_FILES.txt" >&2
+        exit 1
+    fi
+    while read -r f; do
+        [[ -z "$f" ]] && continue
+        [[ -f "data/$f" ]] && cp "data/$f" ../public/
+    done < data/PUBLISHED_FILES.txt
+
+    for f in norbeck.json; do
+        if [[ -f "../public/$f" ]]; then
+            echo "FATAL: ../public/$f exists but is not publishable" >&2
+            exit 1
+        fi
     done
 
     echo "==> Deploying to Firebase Hosting"
@@ -134,5 +148,7 @@ echo "==> Done"
 echo "Generated files:"
 for f in datasets.json thesession.json folkwiki.json norbeck.json \
          folkfriend-non-user-data.json nud-meta.json; do
-    echo "  $SCRIPTPATH/data/$f"
+    [[ -f "data/$f" ]] && echo "  $SCRIPTPATH/data/$f"
 done
+echo "Publishable (see data/PUBLISHED_FILES.txt):"
+[[ -f data/PUBLISHED_FILES.txt ]] && sed 's/^/  /' data/PUBLISHED_FILES.txt

@@ -383,6 +383,12 @@ The built `build/data/norbeck.json` is stamped self-describing (`id`, `label`,
 from a file or from a URL you supply. FolkFriend hosts nothing and is not in the
 distribution chain.
 
+**Both deploy paths are guarded, not just `build.sh`.** `regenerate_dataset.sh`
+also copies into `public/`, and it was missed the first time — it published
+Norbeck for a commit. Both now read `PUBLISHED_FILES.txt` and both fail if
+`public/norbeck.json` exists, and `build_script_test.py` asserts that of every
+script in `SCRIPTS`, so a third entry point cannot quietly skip it.
+
 If you host it somewhere yourself to sync your own devices, note that is still
 you making it available for download — obscurity, not permission — and that the
 app's URL import needs the host to send `Access-Control-Allow-Origin`.
