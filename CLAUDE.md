@@ -200,6 +200,11 @@ The script (`set -e` — exits immediately on any failure):
 7. Moves the output files to `public/`
 8. `git add`, `git commit` (with `nud-meta.json` content as the message), `git push`
 9. `firebase deploy`
+10. **Only then records the input hashes.** They used to be written at detection
+    time, so any later failure — abc2midi dying, a failed validation, a Firebase
+    blip — left the inputs marked as processed. The next run would see
+    "unchanged", exit early, and that dataset would never be retried until its
+    upstream source happened to change again. `set -e` made it silent.
 
 `regenerate_dataset.sh` is the full refresh: it ignores change detection,
 downloads folkwiki live and refreshes both discovery artifacts. Use
@@ -403,10 +408,26 @@ cheap move — he reportedly grants permission readily for non-commercial sites.
 ### Things that were not obvious
 
 - **`Z:id` is the primary key.** `hn-reel-1` is unique, stable across releases,
-  and he requires it be kept. IDs are `sha1(zid)[:8]` plus a base. 8 Z:ids are
-  duplicated in the collection and get a deterministic `#2` suffix; 28 blocks
-  carry an unsubstituted template (`hn-%R-%X`) or no `Z:` and fall back to
-  `<relpath>#<block>`.
+  and he requires it be kept. IDs are `sha1(key)[:8]` plus a base.
+
+  **Every fallback is derived from CONTENT, never from position** — this is the
+  property that stops a user's favourites silently repointing when Norbeck
+  publishes a new zip:
+
+  - 28 blocks carry an unsubstituted template (`hn-%R-%X`) or no `Z:` at all,
+    and key off `sha1(title|meter|mode|body)`.
+  - 8 `Z:id`s are duplicated. **Both** halves of each pair get a content
+    suffix, which is why the build runs a parse pass before an ID pass: if only
+    the second were suffixed, the first would keep the bare key purely for
+    being encountered first, and the two would swap IDs the moment they swapped
+    places in the file.
+  - Only two byte-identical blocks fall back to encounter order, and there it
+    genuinely does not matter which wins.
+
+  The earlier scheme used `<relpath>#<block index>` and a `#2` suffix. Inserting
+  one tune near the top of `hnr0.abc` would have shifted every later fallback ID
+  onto a different tune. `norbeck_pipeline_test.py` asserts the derived keys are
+  identical when the blocks are reversed and when a tune is inserted before them.
 - **Per-tune URLs are `display.asp?rhythm=<rhythm>&ref=<n>`, and `<n>` is the
   Z:id number — but only ~90% of the time, and a wrong ref returns HTTP 500,
   not 404.** Hence `site_refs.json`: emit a deep link only when the pair is

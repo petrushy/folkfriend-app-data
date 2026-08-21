@@ -153,6 +153,76 @@ def parse_zid(zid):
     return rhythm, number
 
 
+def content_key(parsed):
+    """A short hash of what makes this tune this tune.
+
+    Title, meter, mode and the note body — everything that would have to change
+    for it to be a different tune. Deliberately NOT the file it came from or its
+    position in that file, both of which move between releases.
+    """
+    material = '|'.join([
+        (parsed['titles'][0] if parsed['titles'] else ''),
+        parsed['meter'] or '',
+        parsed['mode'] or '',
+        parsed['abc_body'] or '',
+    ])
+    return hashlib.sha1(material.encode('utf-8')).hexdigest()[:12]
+
+
+def derive_key(parsed, zid_parts, seen_keys, duplicate_zids=(), stats=None):
+    """The source-unique key a tune's IDs are hashed from.
+
+    IDs must be stable across RELEASES, not merely across rebuilds of the same
+    release: a user's favourites reference them, and Norbeck publishes a new zip
+    every few months. Both fallbacks here are therefore derived from tune
+    CONTENT, never from position.
+
+    They used to be `<filename>#<block index>` and a `#2` suffix by encounter
+    order. Both are stable only while nothing moves — insert one tune near the
+    top of hnr0.abc, or swap two tunes that share a Z:id, and every later ID
+    shifts onto a different tune. A favourite would silently start pointing at
+    the wrong one.
+
+    `duplicate_zids` is the set of Z:ids that occur MORE THAN ONCE anywhere in
+    the collection, computed in a pre-pass. It has to be known up front: if only
+    the second occurrence were suffixed, the first would keep the bare key by
+    virtue of being encountered first, and the two tunes would swap IDs the
+    moment they swapped places. Both are suffixed, so neither depends on order.
+
+    `seen_keys` is a Counter carried across the whole build; this function
+    updates it.
+    """
+    def bump(name):
+        if stats is not None:
+            stats[name] += 1
+
+    if zid_parts:
+        key = f'hn-{zid_parts[0]}-{zid_parts[1]}'
+        if key in duplicate_zids:
+            # Eight Z:ids are duplicated in the collection.
+            bump('duplicate_zid')
+            key = f'{key}#{content_key(parsed)}'
+    else:
+        # ~28 blocks carry an unsubstituted template or no Z: at all.
+        key = f'hn-content-{content_key(parsed)}'
+        bump('no_usable_zid')
+
+    # Byte-identical blocks collide even on content. They are the same tune, so
+    # which one wins does not matter — but IDs must still be unique, and this is
+    # the one place encounter order can legitimately decide.
+    if key in seen_keys:
+        bump('identical_duplicate')
+        key = f'{key}#{seen_keys[key] + 1}'
+    seen_keys[key] += 1
+    return key
+
+
+def find_duplicate_zids(zid_keys):
+    """Z:id keys occurring more than once. See derive_key."""
+    counts = collections.Counter(k for k in zid_keys if k)
+    return {k for k, n in counts.items() if n > 1}
+
+
 def stable_norbeck_id(key, base):
     """Derive a stable numeric ID from a source-unique key.
 
@@ -247,6 +317,12 @@ def build_norbeck_data(parent_dir):
     seen_keys = collections.Counter()
     stats = collections.Counter()
 
+    # PARSE PASS. Every block is parsed before any ID is assigned, because
+    # derive_key needs to know which Z:ids are duplicated ANYWHERE in the
+    # collection — see its docstring. Parsing is cheap; the expensive step is
+    # abc2midi, which happens once, later.
+    parsed_blocks = []
+
     for rel in manifest['files']:
         abc_path = os.path.join(abc_dir, rel)
         if not os.path.exists(abc_path):
@@ -279,59 +355,54 @@ def build_norbeck_data(parent_dir):
             if zid_raw.lower().startswith('id:'):
                 zid_raw = zid_raw[3:]
             zid_parts = parse_zid(zid_raw)
+            parsed_blocks.append((parsed, zid_parts))
 
-            if zid_parts:
-                key = f'hn-{zid_parts[0]}-{zid_parts[1]}'
-            else:
-                # 57 blocks carry a template placeholder or no Z: at all.
-                key = f'{rel}#{block_index}'
-                stats['no_usable_zid'] += 1
+    duplicate_zids = find_duplicate_zids(
+        f'hn-{z[0]}-{z[1]}' if z else None for _, z in parsed_blocks)
+    log.info(f'Parsed {len(parsed_blocks)} tune blocks; '
+             f'{len(duplicate_zids)} Z:ids are duplicated')
 
-            # Eight Z:ids are duplicated in the collection. Disambiguate
-            # deterministically so IDs stay unique AND stable: the manifest
-            # file list is sorted and block order is fixed, so the same tune
-            # gets the same suffix on every rebuild.
-            seen_keys[key] += 1
-            if seen_keys[key] > 1:
-                stats['duplicate_zid'] += 1
-                key = f'{key}#{seen_keys[key]}'
+    # ID PASS.
+    for parsed, zid_parts in parsed_blocks:
+        key = derive_key(parsed, zid_parts, seen_keys,
+                         duplicate_zids, stats)
 
-            tune_id = stable_norbeck_id(key, NORBECK_TUNE_ID_BASE)
-            setting_id = stable_norbeck_id(key, NORBECK_SETTING_ID_BASE)
+        tune_id = stable_norbeck_id(key, NORBECK_TUNE_ID_BASE)
+        setting_id = stable_norbeck_id(key, NORBECK_SETTING_ID_BASE)
 
-            body = parsed['abc_body']
-            trimmed = contour_body(body)
-            if len(trimmed) != len(body):
-                stats['trimmed_variations'] += 1
+        body = parsed['abc_body']
+        trimmed = contour_body(body)
+        if len(trimmed) != len(body):
+            stats['trimmed_variations'] += 1
 
-            origin = parsed['origin'] or (parsed['extra']['S'] or [''])[0]
+        origin = parsed['origin'] or (parsed['extra']['S'] or [''])[0]
 
-            # The collection is 7-bit ASCII and spells every accented letter as
-            # an ABC escape (`sl\"angpolska`). Decode header-derived text or
-            # every Swedish and Irish title is stored as backslash noise and
-            # cannot be found by searching for the name a user would type.
-            note_len = parsed['note_len'] if parsed['has_note_len'] else None
-            raw_settings.append({
-                'setting_id': setting_id,
-                'tune_id': tune_id,
-                'meter': parsed['meter'],
-                'mode': parsed['mode'],
-                # None when the source has no L:, so abc2midi applies the ABC
-                # standard default. 45% of the collection relies on this.
-                'note_len': note_len,
-                'abc_body': body,
-                'contour_body': trimmed,
-                'dance': decode_abc_escapes(parsed['dance']),
-                'origin': decode_abc_escapes(origin),
-                'composer': decode_abc_escapes(parsed['composer']),
-                'source_url': source_url_for(zid_parts, valid_refs),
-                # Norbeck's own per-tune identifier. His terms require the
-                # Z:id line be kept when a tune is passed on; the stored `abc`
-                # is body-only by schema, so it is carried as a field instead.
-                'zid': key,
-            })
-            raw_aliases[tune_id] = titles_to_aliases(
-                [decode_abc_escapes(t) for t in parsed['titles']])
+        # The collection is 7-bit ASCII and spells every accented letter as
+        # an ABC escape (`sl\"angpolska`). Decode header-derived text or
+        # every Swedish and Irish title is stored as backslash noise and
+        # cannot be found by searching for the name a user would type.
+        note_len = parsed['note_len'] if parsed['has_note_len'] else None
+        raw_settings.append({
+            'setting_id': setting_id,
+            'tune_id': tune_id,
+            'meter': parsed['meter'],
+            'mode': parsed['mode'],
+            # None when the source has no L:, so abc2midi applies the ABC
+            # standard default. 45% of the collection relies on this.
+            'note_len': note_len,
+            'abc_body': body,
+            'contour_body': trimmed,
+            'dance': decode_abc_escapes(parsed['dance']),
+            'origin': decode_abc_escapes(origin),
+            'composer': decode_abc_escapes(parsed['composer']),
+            'source_url': source_url_for(zid_parts, valid_refs),
+            # Norbeck's own per-tune identifier. His terms require the
+            # Z:id line be kept when a tune is passed on; the stored `abc`
+            # is body-only by schema, so it is carried as a field instead.
+            'zid': key,
+        })
+        raw_aliases[tune_id] = titles_to_aliases(
+            [decode_abc_escapes(t) for t in parsed['titles']])
 
     log.info(f'Parsed {len(raw_settings)} settings from Norbeck ABC files')
     for k, v in sorted(stats.items()):

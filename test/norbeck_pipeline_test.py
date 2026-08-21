@@ -124,6 +124,7 @@ class NorbeckPipelineTest(unittest.TestCase):
         )
         cls.nb = load_module('build_norbeck_data',
                              build_src / 'build_norbeck_data.py')
+        cls.abc = load_module('abc_common', build_src / 'abc_common.py')
 
     def test_parses_zid(self):
         self.assertEqual(self.nb.parse_zid('hn-reel-1'), ('reel', '1'))
@@ -193,6 +194,107 @@ class NorbeckPipelineTest(unittest.TestCase):
         # is a dead chip in the UI.
         self.assertTrue(self.nb.source_url_for(None, None))
         self.assertTrue(self.nb.source_url_for(('nonsense', '1'), None))
+
+    # --- ID stability across releases -----------------------------------
+
+    def _keys_for(self, blocks):
+        """Derive the ID key for each parsed block, in the given order.
+
+        Mirrors the real build: a parse pass to find duplicated Z:ids, then an
+        ID pass. The pre-pass is the whole point — without it the first of two
+        duplicates keeps the bare key just for being first.
+        """
+        import collections
+
+        def zid_of(parsed):
+            raw = (parsed['extra']['Z'] or [''])[0]
+            if raw.lower().startswith('id:'):
+                raw = raw[3:]
+            return self.nb.parse_zid(raw)
+
+        pairs = [(parsed, zid_of(parsed)) for parsed in blocks]
+        duplicates = self.nb.find_duplicate_zids(
+            f'hn-{z[0]}-{z[1]}' if z else None for _, z in pairs)
+
+        seen = collections.Counter()
+        out = {}
+        for parsed, zid_parts in pairs:
+            key = self.nb.derive_key(parsed, zid_parts, seen, duplicates)
+            # Index by content so the two runs can be compared regardless of
+            # the order they were produced in.
+            out[self.nb.content_key(parsed)] = key
+        return out
+
+    def _blocks(self, texts):
+        parsed = []
+        for text in texts:
+            p = self.abc.parse_abc_tune(text, extra_fields=('Z', 'S'))
+            if p is not None:
+                parsed.append(p)
+        return parsed
+
+    def test_ids_survive_tunes_being_reordered(self):
+        # Norbeck publishes a new zip every few months. If an ID depends on a
+        # tune's POSITION, inserting one tune near the top of a file silently
+        # repoints every later ID onto a different tune — and a user's
+        # favourites follow it. This is the property that stops that.
+        head = 'X:1\nT:%s\nR:reel\nZ:id:hn-reel-%d\nM:C|\nK:G\n%s\n'
+        texts = [
+            head % ('Alpha', 1, 'GABc defg|'),
+            head % ('Beta', 2, 'ABcd efga|'),
+            # No Z:id at all — the position-derived fallback case.
+            'X:3\nT:Gamma\nR:reel\nM:C|\nK:D\nDEFG ABcd|\n',
+            # An unsubstituted template, which is not an identifier either.
+            'X:4\nT:Delta\nR:reel\nZ:id:hn-%R-%X\nM:C|\nK:D\ncdef gabc|\n',
+        ]
+        forward = self._keys_for(self._blocks(texts))
+        reversed_ = self._keys_for(self._blocks(list(reversed(texts))))
+        self.assertEqual(forward, reversed_,
+                         'tune IDs changed when the file order changed')
+
+        # ...and inserting a new tune must not disturb the existing ones.
+        inserted = ['X:0\nT:Newcomer\nR:reel\nM:C|\nK:A\naaaa bbbb|\n'] + texts
+        after = self._keys_for(self._blocks(inserted))
+        for content, key in forward.items():
+            self.assertEqual(after.get(content), key,
+                             'an existing tune ID moved when a tune was '
+                             'inserted before it')
+
+    def test_duplicate_zids_are_separated_by_content_not_order(self):
+        # Eight Z:ids are duplicated in the real collection. Disambiguating by
+        # encounter order means the two tunes swap IDs if they ever swap places.
+        dup = 'X:%d\nT:%s\nR:reel\nZ:id:hn-reel-9\nM:C|\nK:G\n%s\n'
+        texts = [dup % (1, 'First', 'GABc defg|'),
+                 dup % (2, 'Second', 'ABcd efga|')]
+        forward = self._keys_for(self._blocks(texts))
+        reversed_ = self._keys_for(self._blocks(list(reversed(texts))))
+        self.assertEqual(len(set(forward.values())), 2, 'IDs must stay unique')
+        self.assertEqual(forward, reversed_,
+                         'duplicate-Z:id tunes swapped IDs when reordered')
+
+    def test_byte_identical_tunes_still_get_unique_ids(self):
+        # Content hashing cannot separate two identical blocks. They are the
+        # same tune so it does not matter which wins, but the IDs must not
+        # collide — the build asserts uniqueness and would fail.
+        same = 'X:1\nT:Twin\nR:reel\nZ:id:hn-reel-9\nM:C|\nK:G\nGABc defg|\n'
+        import collections
+        seen = collections.Counter()
+        keys = []
+        for parsed in self._blocks([same, same]):
+            keys.append(self.nb.derive_key(
+                parsed, ('reel', '9'), seen, {'hn-reel-9'}))
+        self.assertEqual(len(set(keys)), 2, f'IDs collided: {keys}')
+
+    def test_content_key_ignores_where_the_tune_came_from(self):
+        a = self.abc.parse_abc_tune(
+            'X:1\nT:Same\nR:reel\nM:C|\nK:G\nGABc defg|\n')
+        b = self.abc.parse_abc_tune(
+            'X:57\nT:Same\nR:jig\nM:C|\nK:G\nGABc defg|\n')
+        # X: number and R: differ; title, meter, mode and body do not.
+        self.assertEqual(self.nb.content_key(a), self.nb.content_key(b))
+        c = self.abc.parse_abc_tune(
+            'X:1\nT:Same\nR:reel\nM:C|\nK:G\ncccc dddd|\n')
+        self.assertNotEqual(self.nb.content_key(a), self.nb.content_key(c))
 
     def test_every_mapped_rhythm_has_a_category(self):
         # The index-page fallback needs cat=; without it the listing 404s.

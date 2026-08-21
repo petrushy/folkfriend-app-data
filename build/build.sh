@@ -34,8 +34,17 @@ mkdir -p data/hashes
 # point of splitting the published index: a folkwiki refresh must not bump
 # thesession's version and force every user into a 35 MB download.
 #
-# `changed <name> <files...>` sets <NAME>_CHANGED=1 and updates the stored hash.
+# HASHES ARE ONLY PERSISTED ONCE THE DEPLOY HAS SUCCEEDED. Recording them here,
+# at detection time, means a failure anywhere later — abc2midi dying, a failed
+# validation, a Firebase blip — leaves the input marked as processed, so the
+# next run sees "unchanged", exits early, and that dataset is never retried
+# until its upstream source happens to change again. `set -e` makes that silent:
+# the script simply stops, and the stale hash is already on disk.
+#
+# `check_changed <name> <files...>` sets CHANGED[<name>] and stashes the new
+# hash in PENDING_HASH[<name>]; commit_hashes writes them at the very end.
 declare -A CHANGED
+declare -A PENDING_HASH
 
 check_changed () {
     local name="$1"; shift
@@ -43,14 +52,22 @@ check_changed () {
     local new_hash
     touch "$hash_file"
     new_hash=$(sha1sum "$@" 2>/dev/null | sha1sum || echo missing)
+    PENDING_HASH[$name]="$new_hash"
     if [[ "$(cat "$hash_file")" == "$new_hash" ]]; then
         CHANGED[$name]=0
         echo "  $name: inputs unchanged"
     else
         CHANGED[$name]=1
-        echo "$new_hash" > "$hash_file"
         echo "  $name: inputs changed, will rebuild"
     fi
+}
+
+commit_hashes () {
+    local name
+    for name in "${!PENDING_HASH[@]}"; do
+        echo "${PENDING_HASH[$name]}" > "data/hashes/${name}.sha1"
+    done
+    echo "Recorded input hashes for: ${!PENDING_HASH[*]}"
 }
 
 echo "==> Fetching sources"
@@ -92,6 +109,8 @@ then
     echo ""
     echo "No dataset inputs have changed. Exiting."
     echo ""
+    # Nothing was rebuilt, so there is nothing new to record — and the stored
+    # hashes already match by definition.
     deactivate
     exit 0
 fi
@@ -133,4 +152,8 @@ git add public/
 git commit -m "`cat public/nud-meta.json`"
 git push
 firebase deploy
+
+# Everything succeeded — only now is it safe to say these inputs are processed.
+cd "$SCRIPTPATH"
+commit_hashes
 deactivate
