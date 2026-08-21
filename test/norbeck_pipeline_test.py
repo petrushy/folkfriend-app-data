@@ -156,14 +156,57 @@ class NorbeckPipelineTest(unittest.TestCase):
                                       self.nb.NORBECK_TUNE_ID_BASE)
         self.assertEqual(len({a, b, c}), 3)
 
-    def test_contour_body_stops_at_variations(self):
-        # Everything after a body-level P: is variations, alternate versions or
-        # song verses. abc2midi would play all of it, doubling the contour with
-        # material nobody plays straight through.
-        body = 'ABCD|EFGA|\nP:variations\nZZZZ|YYYY|'
-        self.assertEqual(self.nb.contour_body(body), 'ABCD|EFGA|')
+    def test_body_without_parts_is_one_setting(self):
         plain = 'ABCD|EFGA|'
-        self.assertEqual(self.nb.contour_body(plain), plain)
+        self.assertEqual(self.nb.split_body_sections(plain), [(None, plain)])
+
+    def test_each_part_becomes_its_own_setting(self):
+        # A P: section is a complete alternative rendering of the tune —
+        # measured at 1.01x the length of the head — so it is a setting in
+        # exactly the sense thesession uses, not a fragment to discard.
+        body = 'ABCD|EFGA|\nP:variations\ndcba|gfed|\nP:more variations\nGGGG|AAAA|'
+        self.assertEqual(
+            self.nb.split_body_sections(body),
+            [(None, 'ABCD|EFGA|'),
+             ('variations', 'dcba|gfed|'),
+             ('more variations', 'GGGG|AAAA|')])
+
+    def test_a_body_starting_with_a_part_has_no_empty_head(self):
+        # 12 tunes (songs, where every verse is a part) start with a P:. The
+        # old truncate-at-first-P: gave them an EMPTY contour, so they could
+        # not be found at all.
+        body = 'P:first verse\nABCD|EFGA|\nP:remaining verses\ndcba|gfed|'
+        sections = self.nb.split_body_sections(body)
+        self.assertEqual(len(sections), 2)
+        self.assertEqual(sections[0], ('first verse', 'ABCD|EFGA|'))
+        for _, text in sections:
+            self.assertTrue(self.nb.has_notes(text))
+
+    def test_sections_with_no_notes_are_dropped(self):
+        body = 'ABCD|EFGA|\nP:see the other version\n\nP:variations\ndcba|'
+        self.assertEqual(
+            self.nb.split_body_sections(body),
+            [(None, 'ABCD|EFGA|'), ('variations', 'dcba|')])
+
+    def test_section_ids_sort_after_their_head_and_stay_adjacent(self):
+        # The Rust side orders a tune's settings by numeric id, so without the
+        # packing a variation could be listed above the tune it varies.
+        base = self.nb.NORBECK_SETTING_ID_BASE
+        head = int(self.nb.stable_norbeck_id('hn-reel-1', base, 0))
+        first = int(self.nb.stable_norbeck_id('hn-reel-1', base, 1))
+        second = int(self.nb.stable_norbeck_id('hn-reel-1', base, 2))
+        self.assertLess(head, first)
+        self.assertLess(first, second)
+        self.assertEqual(second - head, 2)
+        # ...and another tune's settings never interleave with them.
+        other = int(self.nb.stable_norbeck_id('hn-reel-2', base, 0))
+        self.assertFalse(head < other < second)
+
+    def test_too_many_sections_is_a_build_failure(self):
+        with self.assertRaises(ValueError):
+            self.nb.stable_norbeck_id(
+                'hn-reel-1', self.nb.NORBECK_SETTING_ID_BASE,
+                self.nb.SECTION_MULTIPLIER)
 
     def test_source_url_is_a_deep_link_when_the_ref_exists(self):
         url = self.nb.source_url_for(('reel', '1'), {('reel', '1')})

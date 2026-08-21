@@ -127,14 +127,24 @@ SITE_BASE = 'https://www.norbeck.nu/abc/'
 # ('hn-%R-%X'), which are not identifiers at all.
 _ZID_RE = re.compile(r'^hn-(.+)-(\d+)$')
 
-# A P: line in the BODY introduces alternate material — 'variations',
-# 'Version 2', song verses. 1,062 occurrences across the collection, of which
-# over 96% are variation or version markers. abc2midi plays all of it, which
-# would make the stored contour two or three times longer than the tune and
-# mix in material a player would not play. The contour is therefore computed
-# from the body up to the first body-level P:, while the FULL body is stored
-# as `abc` — the variations are worth seeing and hearing, just not searching.
-_BODY_PART_RE = re.compile(r'(?m)^P:')
+# A P: line in the BODY starts an alternative rendering of the whole tune —
+# 'variations', 'Version 2', song verses. 1,062 of them across the collection.
+#
+# THESE ARE COMPLETE SETTINGS, NOT FRAGMENTS. Measured against the head of the
+# same tune, the median section is 1.01x its length; only 2 of 836 'variations'
+# sections are under a quarter. So Norbeck's variations are the same thing
+# thesession calls a setting: another way the tune is played, end to end.
+#
+# They are therefore split into separate settings sharing one tune_id, exactly
+# as thesession does. The previous behaviour — compute the contour from the head
+# and discard the rest — left 925 tunes with material the app could display but
+# never match, and left the 12 tunes whose body STARTS with a P: (songs, where
+# every verse is a part) with an empty contour and no way to find them at all.
+_BODY_PART_RE = re.compile(r'(?m)^P:(.*)$')
+
+# Sections per tune are packed into the setting id, so they sort after their
+# head and stay adjacent. The real maximum is 5.
+SECTION_MULTIPLIER = 100
 
 
 def parse_zid(zid):
@@ -223,14 +233,23 @@ def find_duplicate_zids(zid_keys):
     return {k for k, n in counts.items() if n > 1}
 
 
-def stable_norbeck_id(key, base):
+def stable_norbeck_id(key, base, section=None):
     """Derive a stable numeric ID from a source-unique key.
 
-    `key` is the Z:id where there is one, else '<relpath>#<X number>'. One
-    setting per tune here, so unlike folkwiki there is no block multiplier.
+    `key` is the Z:id where there is one, else a content hash.
+
+    `section` packs a setting's position within its tune into the id, so a
+    tune's settings sort together and the head (section 0) comes first — the
+    Rust side orders settings by numeric id, so without this a variation could
+    be listed above the tune it varies.
     """
     offset = int(hashlib.sha1(key.encode('utf-8')).hexdigest()[:8], 16)
-    return str(base + offset)
+    if section is None:
+        return str(base + offset)
+    if section >= SECTION_MULTIPLIER:
+        raise ValueError(
+            f'{key} has more than {SECTION_MULTIPLIER} sections')
+    return str(base + offset * SECTION_MULTIPLIER + section)
 
 
 def source_url_for(zid_parts, valid_refs):
@@ -259,10 +278,30 @@ def source_url_for(zid_parts, valid_refs):
     return SITE_BASE + 'index2.asp?' + urllib.parse.urlencode(query)
 
 
-def contour_body(abc_body):
-    """The part of the body the contour is computed from (see _BODY_PART_RE)."""
-    m = _BODY_PART_RE.search(abc_body)
-    return abc_body[:m.start()].strip() if m else abc_body
+def split_body_sections(abc_body):
+    """Split a body into settings: [(label, text), ...], the head first.
+
+    `label` is None for the head and the P: text for each section. Sections
+    with no notes are dropped — a body that STARTS with a P: has an empty head,
+    which is not a setting.
+    """
+    marks = list(_BODY_PART_RE.finditer(abc_body))
+    if not marks:
+        return [(None, abc_body.strip())] if has_notes(abc_body) else []
+
+    out = [(None, abc_body[:marks[0].start()])]
+    for i, mark in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(abc_body)
+        out.append((mark.group(1).strip(), abc_body[mark.end():end]))
+
+    return [(label, text.strip()) for label, text in out if has_notes(text)]
+
+
+_NOTE_RE = re.compile(r'[A-Ga-g]')
+
+
+def has_notes(text):
+    return bool(_NOTE_RE.search(text or ''))
 
 
 def generate_midi_contour(args):
@@ -368,12 +407,6 @@ def build_norbeck_data(parent_dir):
                          duplicate_zids, stats)
 
         tune_id = stable_norbeck_id(key, NORBECK_TUNE_ID_BASE)
-        setting_id = stable_norbeck_id(key, NORBECK_SETTING_ID_BASE)
-
-        body = parsed['abc_body']
-        trimmed = contour_body(body)
-        if len(trimmed) != len(body):
-            stats['trimmed_variations'] += 1
 
         origin = parsed['origin'] or (parsed['extra']['S'] or [''])[0]
 
@@ -382,43 +415,74 @@ def build_norbeck_data(parent_dir):
         # every Swedish and Irish title is stored as backslash noise and
         # cannot be found by searching for the name a user would type.
         note_len = parsed['note_len'] if parsed['has_note_len'] else None
-        raw_settings.append({
-            'setting_id': setting_id,
-            'tune_id': tune_id,
-            'meter': parsed['meter'],
-            'mode': parsed['mode'],
-            # None when the source has no L:, so abc2midi applies the ABC
-            # standard default. 45% of the collection relies on this.
-            'note_len': note_len,
-            'abc_body': body,
-            'contour_body': trimmed,
-            'dance': decode_abc_escapes(parsed['dance']),
-            'origin': decode_abc_escapes(origin),
-            'composer': decode_abc_escapes(parsed['composer']),
-            'source_url': source_url_for(zid_parts, valid_refs),
-            # Norbeck's own per-tune identifier. His terms require the
-            # Z:id line be kept when a tune is passed on; the stored `abc`
-            # is body-only by schema, so it is carried as a field instead.
-            'zid': key,
-        })
+
+        # One setting per section, all sharing this tune_id — the same shape
+        # thesession has, where a tune carries several settings.
+        sections = split_body_sections(parsed['abc_body'])
+        if not sections:
+            stats['no_notes'] += 1
+            continue
+        if len(sections) > 1:
+            stats['tunes_with_variations'] += 1
+            stats['extra_settings'] += len(sections) - 1
+
+        for index, (label, section_body) in enumerate(sections):
+            # The label is kept in the STORED abc so ABCJS renders it above
+            # the score ("Variations"), and stripped from what abc2midi sees,
+            # where a P: would trigger part expansion.
+            stored = f'P:{label}\n{section_body}' if label else section_body
+            raw_settings.append({
+                'setting_id': stable_norbeck_id(
+                    key, NORBECK_SETTING_ID_BASE, index),
+                'tune_id': tune_id,
+                'meter': parsed['meter'],
+                'mode': parsed['mode'],
+                # None when the source has no L:, so abc2midi applies the ABC
+                # standard default. 45% of the collection relies on this.
+                'note_len': note_len,
+                'abc_body': stored,
+                'contour_body': section_body,
+                'dance': decode_abc_escapes(parsed['dance']),
+                'origin': decode_abc_escapes(origin),
+                'composer': decode_abc_escapes(parsed['composer']),
+                'source_url': source_url_for(zid_parts, valid_refs),
+                # Norbeck's own per-tune identifier. His terms require the
+                # Z:id line be kept when a tune is passed on; the stored `abc`
+                # is body-only by schema, so it is carried as a field instead.
+                'zid': key,
+            })
+
         raw_aliases[tune_id] = titles_to_aliases(
             [decode_abc_escapes(t) for t in parsed['titles']])
 
-    log.info(f'Parsed {len(raw_settings)} settings from Norbeck ABC files')
+    log.info(f'Parsed {len(raw_settings)} settings across {len(raw_aliases)} '
+             'tunes from Norbeck ABC files')
     for k, v in sorted(stats.items()):
         log.info(f'  {k}: {v}')
 
-    # IDs must be globally unique or one tune silently shadows another in the
+    # IDs must be globally unique or one record silently shadows another in the
     # merged index. Collision chance is ~1e-3 across 3.5k tunes, so this is a
     # real if unlikely event and must fail the build rather than warn.
-    for name, ids in (('tune_id', [s['tune_id'] for s in raw_settings]),
-                      ('setting_id', [s['setting_id'] for s in raw_settings])):
-        dupes = [i for i, n in collections.Counter(ids).items() if n > 1]
-        if dupes:
+    #
+    # Setting ids must be unique outright. Tune ids are SHARED by the settings
+    # of one tune — that is the point of splitting — so what matters there is
+    # that two different source keys never landed on the same tune id.
+    dupes = [i for i, n in collections.Counter(
+        s['setting_id'] for s in raw_settings).items() if n > 1]
+    if dupes:
+        raise SystemExit(
+            f'FATAL: {len(dupes)} duplicate norbeck setting_ids '
+            f'(e.g. {dupes[:5]}). Two source keys hashed to the same offset; '
+            'widen the hash slice in stable_norbeck_id.')
+
+    key_by_tune = {}
+    for setting in raw_settings:
+        previous = key_by_tune.setdefault(setting['tune_id'], setting['zid'])
+        if previous != setting['zid']:
             raise SystemExit(
-                f'FATAL: {len(dupes)} duplicate norbeck {name}s '
-                f'(e.g. {dupes[:5]}). Two source keys hashed to the same '
-                'offset; widen the hash slice in stable_norbeck_id.')
+                f'FATAL: tune_id {setting["tune_id"]} is claimed by two '
+                f'different tunes ({previous!r} and {setting["zid"]!r}). '
+                'Widen the hash slice in stable_norbeck_id.')
 
     contours = process_map(
         generate_midi_contour,

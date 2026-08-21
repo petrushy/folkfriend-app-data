@@ -462,12 +462,34 @@ cheap move — he reportedly grants permission readily for non-commercial sites.
   several families, non-derivably: `sp`→`slängpolska`, `slipjig`→`slip jig`,
   `jp`→`polska J`, `hf`→`highland`, `setdance`→`set dance`. `ZID_TO_SITE_RHYTHM`
   was read off the site's own category navigation.
-- **A `P:` line in the body starts variations, alternate versions or song
-  verses** — 1,062 occurrences, 96% of them variation markers. abc2midi plays
-  all of it, which would make the stored contour two or three times longer than
-  the tune. The contour is computed from the body up to the first body-level
-  `P:`; the **full** body is still stored as `abc`, so the variations are
-  visible and playable, just not searched. 925 settings are trimmed this way.
+- **A `P:` line in the body starts another complete setting of the tune**, and
+  each becomes its own setting sharing the tune's id — the same shape
+  thesession has. 1,062 sections across 924 tunes, giving **4,521 settings over
+  3,472 tunes**.
+
+  This was first read as "variations are fragments to discard": the contour came
+  from the head of the body and the rest was kept only for display. Measuring
+  settled it — against the head of the same tune the median section is
+  **1.01×** its length, and only 2 of 836 `variations` sections are under a
+  quarter. They are complete alternative renderings, not snippets.
+
+  The old behaviour left 925 tunes with material the app could show but never
+  match, and left the **12 tunes whose body *starts* with a `P:`** (songs, where
+  every verse is a part) with an empty head, an empty contour, and no way to be
+  found at all. Splitting fixed all 12; the dataset now has **zero** empty
+  contours.
+
+  Setting ids pack the section index (`base + hash*100 + n`) so a tune's
+  settings sort together and the head comes first — the Rust side orders
+  settings by numeric id, so otherwise a variation could be listed above the
+  tune it varies. The section's `P:` label is kept in the stored `abc`, where
+  ABCJS renders it above the score, and stripped from what abc2midi sees, where
+  it would trigger part expansion.
+
+  **Norbeck setting ids therefore changed** (tune ids did not), so the
+  uniqueness check is split: setting ids must be unique outright, while tune ids
+  are shared by a tune's settings and are only checked for two different source
+  keys landing on the same id.
 - **45% of tunes have no `L:` field**, and 290 of those are in 2/4 or 3/8 where
   the ABC default is 1/16, not 1/8. See `abc_common.py` above.
 - **Every accented character is a TeX escape.** See `decode_abc_escapes`.
