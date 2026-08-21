@@ -493,6 +493,18 @@ cheap move — he reportedly grants permission readily for non-commercial sites.
 - **45% of tunes have no `L:` field**, and 290 of those are in 2/4 or 3/8 where
   the ABC default is 1/16, not 1/8. See `abc_common.py` above.
 - **Every accented character is a TeX escape.** See `decode_abc_escapes`.
+- **`K:Amix` was read as A MINOR.** `normalize_mode`'s alternation was
+  `maj|min|m|dor|mix|…`, and alternation is first-match-wins: the bare `m`
+  swallowed the first letter of every mixolydian key and left `ix` unmatched.
+  Not a labelling slip — the mode goes into the header abc2midi reads, so A
+  mixolydian (F♯, C♯) was rendered with no sharps at all, giving **wrong
+  pitches and a wrong contour**. 355 Norbeck and 18 folkwiki tunes; the folkwiki
+  half had been wrong since the dataset was first built in April. Suffixes are
+  now ordered longest-first and `norbeck_pipeline_test.py` checks every one.
+
+  Note the MIDI cache is keyed on setting id, not on content, so a fix that
+  changes the ABC handed to abc2midi needs `data/*/midis/` cleared or it will
+  quietly reuse the wrong output.
 - Each file opens with a copyright preamble before the first `X:`, which
   becomes its own block and is rejected by `parse_abc_tune` for having no
   `T:`/`M:`/`K:`. That accounts for 72 of the 73 "unparseable blocks"; the 73rd

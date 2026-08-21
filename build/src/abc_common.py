@@ -219,9 +219,16 @@ MODE_SUFFIX_MAP = {
     'aeo':     'minor',     # aeolian = natural minor
 }
 
-# Regex: optional sharp/flat, then optional mode suffix
+# Regex: optional sharp/flat, then optional mode suffix.
+#
+# ORDER MATTERS. Alternation is first-match-wins, so a bare `m` listed before
+# `mix` swallows the first letter of every mixolydian key and leaves `ix`
+# unmatched — `K:Amix` was read as A MINOR. That is not a labelling slip: the
+# mode goes into the header abc2midi reads, so A mixolydian (F#, C#) was
+# rendered with no sharps at all, giving wrong pitches and a wrong contour.
+# Longest first.
 _KEY_RE = re.compile(
-    r'^([A-G][#b]?)\s*(maj|min|m|dor|mix|lyd|phr|loc|aeo)?',
+    r'^([A-G][#b]?)\s*(maj|min|mix|dor|lyd|phr|loc|aeo|m)?',
     re.IGNORECASE
 )
 

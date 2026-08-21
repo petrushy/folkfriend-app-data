@@ -68,6 +68,36 @@ class AbcCommonTest(unittest.TestCase):
             self.assertNotIn('\\', out, raw)
             self.assertNotIn('{', out, raw)
 
+    def test_mixolydian_is_not_read_as_minor(self):
+        # Alternation is first-match-wins, so a bare `m` listed before `mix`
+        # swallowed the first letter and left `ix` unmatched: K:Amix became
+        # A MINOR. Not a labelling slip — the mode goes into the header
+        # abc2midi reads, so A mixolydian (F#, C#) was rendered with no sharps
+        # at all, giving wrong pitches and a wrong contour. 355 Norbeck tunes
+        # and 18 folkwiki tunes were affected.
+        n = self.abc.normalize_mode
+        for key, expected in (('Amix', 'Amixolydian'), ('Dmix', 'Dmixolydian'),
+                              ('Gmix', 'Gmixolydian'), ('Emix', 'Emixolydian')):
+            self.assertEqual(n(key), expected)
+
+    def test_every_mode_suffix_survives_the_alternation(self):
+        # The same shadowing could bite any suffix that is a prefix of another.
+        n = self.abc.normalize_mode
+        cases = {
+            'Amaj': 'Amajor', 'Amin': 'Aminor', 'Am': 'Aminor',
+            'Amix': 'Amixolydian', 'Ador': 'Adorian', 'Alyd': 'Alydian',
+            'Aphr': 'Aphrygian', 'Aloc': 'Alocrian', 'Aaeo': 'Aminor',
+            'A': 'Amajor',
+        }
+        for key, expected in cases.items():
+            self.assertEqual(n(key), expected, key)
+
+    def test_accidentals_and_case_survive(self):
+        n = self.abc.normalize_mode
+        self.assertEqual(n('F#m'), 'F#minor')
+        self.assertEqual(n('Bb'), 'Bbmajor')
+        self.assertEqual(n('f#MIX'), 'F#mixolydian')
+
     # -- unit note length ------------------------------------------------
 
     def test_reports_whether_note_length_was_explicit(self):
