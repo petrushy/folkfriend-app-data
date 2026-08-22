@@ -1,5 +1,6 @@
 {
     "hosting": {
+        "site": "folkfriend-data",
         "public": "public",
         "ignore": [
             "firebase.json",

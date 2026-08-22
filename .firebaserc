@@ -1,5 +1,12 @@
 {
   "projects": {
-    "default": "folkfriend-app-data"
+    "default": "folkfriend-petrush-fork"
+  },
+  "targets": {
+    "folkfriend-petrush-fork": {
+      "hosting": {
+        "data": ["folkfriend-data"]
+      }
+    }
   }
 }
