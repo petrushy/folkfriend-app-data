@@ -4,3 +4,13 @@ build/abc2midi
 *.pyc
 */venv/*
 .firebase/*
+
+# The legacy merged bundle is DERIVED from thesession.json + folkwiki.json by
+# assemble_datasets.py. Committing it as well would add ~42 MB of pure
+# redundancy to every data revision on top of the 45 MB of dataset files.
+#
+# It is still deployed: firebase.json has its own ignore list and does not
+# consult .gitignore, and build.sh writes the file into public/ before
+# `firebase deploy`. Installed apps predating dataset selection depend on it,
+# so if you ever deploy by hand, regenerate it first.
+public/folkfriend-non-user-data.json

@@ -25,6 +25,14 @@ class FolkwikiPipelineTest(unittest.TestCase):
             'py_midicsv',
             types.SimpleNamespace(midi_to_csv=lambda *_args, **_kwargs: []),
         )
+        # normalize_mode, split_abc_tunes, parse_abc_tune and
+        # extract_primary_voice_body_lines moved to abc_common when the third
+        # source arrived; they were never folkwiki-specific. The folkwiki
+        # module re-exports nothing, so reach for them where they now live.
+        cls.abc_common = load_module(
+            'abc_common',
+            build_src / 'abc_common.py',
+        )
         cls.folkwiki = load_module(
             'build_folkwiki_data',
             build_src / 'build_folkwiki_data.py',
@@ -35,7 +43,7 @@ class FolkwikiPipelineTest(unittest.TestCase):
         )
 
     def test_normalize_mode_handles_common_special_values(self):
-        normalize_mode = self.folkwiki.normalize_mode
+        normalize_mode = self.abc_common.normalize_mode
         self.assertEqual(normalize_mode('Am'), 'Aminor')
         self.assertEqual(normalize_mode('Ddor'), 'Ddorian')
         self.assertEqual(normalize_mode('HP'), 'Cmajor')
@@ -68,7 +76,7 @@ class FolkwikiPipelineTest(unittest.TestCase):
             'K:Am',
             'ABcd',
         ])
-        parsed = self.folkwiki.parse_abc_tune(abc)
+        parsed = self.abc_common.parse_abc_tune(abc)
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed['titles'], ['Primary Title', 'Alias Title'])
         self.assertEqual(parsed['meter'], '3/4')
@@ -92,14 +100,14 @@ class FolkwikiPipelineTest(unittest.TestCase):
             'D,2 A,2 D2 |',
             'A,2 D2 A,2 |',
         ])
-        parsed = self.folkwiki.parse_abc_tune(abc)
+        parsed = self.abc_common.parse_abc_tune(abc)
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed['abc_body'], 'd2 e2 f2 |\ng2 a2 b2 |')
 
     def test_extract_primary_voice_body_lines_keeps_single_voice_input(self):
         lines = ['d2 e2 f2 |', 'g2 a2 b2 |']
         self.assertEqual(
-            self.folkwiki.extract_primary_voice_body_lines(lines),
+            self.abc_common.extract_primary_voice_body_lines(lines),
             lines,
         )
 

@@ -1,40 +1,142 @@
+"""Ordering invariants of build.sh, checked at the text level.
+
+These are cheap guards on a script that is only ever run by hand against live
+data, where getting the order wrong deploys a broken dataset rather than
+failing a test. The assertions are deliberately about *relative order* and
+*presence*, not exact command strings, so ordinary edits to the script do not
+break them — the previous version asserted on three literal lines and broke the
+moment the script was touched.
+"""
+
 import pathlib
+import re
 import unittest
+
+DATASETS = ('thesession', 'folkwiki', 'norbeck')
+
+# Both entry points deploy, so both need the unpublished-file protection.
+# regenerate_dataset.sh had it added second and was missed the first time.
+SCRIPTS = ('build.sh', 'regenerate_dataset.sh')
 
 
 class BuildScriptTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         repo_root = pathlib.Path(__file__).resolve().parents[1]
-        cls.build_script = repo_root / 'build' / 'build.sh'
-        cls.lines = cls.build_script.read_text(encoding='utf-8').splitlines()
+        cls.script = (repo_root / 'build' / 'build.sh').read_text(
+            encoding='utf-8')
+        cls.lines = cls.script.splitlines()
 
-    def test_hash_is_computed_after_download(self):
-        download_idx = next(
+    def index_of(self, pattern):
+        rx = re.compile(pattern)
+        for i, line in enumerate(self.lines):
+            if rx.search(line):
+                return i
+        self.fail(f'build.sh has no line matching {pattern!r}')
+
+    def test_every_dataset_is_downloaded_then_hashed(self):
+        # Change detection must run on freshly downloaded inputs, or a build
+        # skips itself on the strength of last run's files.
+        for ds in DATASETS:
+            download = self.index_of(rf'download_{ds}_data\.py')
+            check = self.index_of(rf'check_changed {ds}\b')
+            self.assertGreater(
+                check, download,
+                f'{ds}: change detection must come after its download')
+
+    def test_change_detection_covers_every_dataset(self):
+        # The original build.sh hashed only thesession's inputs, so a folkwiki
+        # or norbeck update could never trigger a rebuild.
+        for ds in DATASETS:
+            self.index_of(rf'check_changed {ds}\b')
+
+    def test_each_builder_is_gated_on_its_own_dataset(self):
+        # Rebuilding an unchanged dataset bumps its version and forces every
+        # client to re-download it — 35 MB in thesession's case.
+        for ds in DATASETS:
+            line = self.lines[self.index_of(rf'build_{ds}_data\.py')]
+            self.assertIn(
+                f'CHANGED[{ds}]', line,
+                f'{ds}: builder must be gated on CHANGED[{ds}]')
+
+    def test_assemble_runs_after_all_builders(self):
+        assemble = self.index_of(r'assemble_datasets\.py')
+        for ds in DATASETS:
+            self.assertGreater(
+                assemble, self.index_of(rf'build_{ds}_data\.py'),
+                f'assemble_datasets must run after the {ds} builder')
+
+    def test_validation_runs_before_publishing(self):
+        # set -e plus this ordering is what stops a bad dataset reaching
+        # public/ and then Firebase.
+        validate = max(
             i for i, line in enumerate(self.lines)
-            if 'python src/download_thesession_data.py $SCRIPTPATH' in line
+            if 'validate_output.py' in line
         )
-        hash_idx = next(
-            i for i, line in enumerate(self.lines)
-            if 'sha1sum data/tunes.json data/aliases.json &> $NEW_HASH' in line
-        )
-        self.assertGreater(hash_idx, download_idx)
+        publish = self.index_of(r'mv "data/\$f" \.\./public/')
+        self.assertGreater(
+            publish, validate,
+            'output must not reach public/ before it is validated')
 
-    def test_hash_uses_downloaded_thesession_inputs(self):
-        hash_lines = [
-            line for line in self.lines
-            if 'sha1sum ' in line and '$NEW_HASH' in line
-        ]
-        self.assertEqual(
-            hash_lines,
-            ['sha1sum data/tunes.json data/aliases.json &> $NEW_HASH']
-        )
+    def test_deploy_runs_last(self):
+        publish = self.index_of(r'mv "data/\$f" \.\./public/')
+        deploy = self.index_of(r'^firebase deploy')
+        self.assertGreater(deploy, publish)
 
-    def test_build_runs_folkwiki_validation(self):
-        self.assertTrue(
-            any('python src/validate_output.py $SCRIPTPATH --manifest-path data/folkwiki/manifest.json --pageid-path data/folkwiki/hexhash_to_pageid.json' in line
-                for line in self.lines)
-        )
+    def test_publishes_only_what_the_build_declared(self):
+        # build.sh used to name each output file literally, which meant the
+        # list could drift from what assemble_datasets actually produced — and
+        # the way it would drift is by publishing something that must not be.
+        # It now reads PUBLISHED_FILES.txt, which the build writes.
+        self.index_of(r'PUBLISHED_FILES\.txt')
+        publish = self.index_of(r'mv "data/\$f" \.\./public/')
+        reads_list = self.index_of(r'< data/PUBLISHED_FILES\.txt')
+        self.assertGreater(
+            reads_list, publish - 3,
+            'the publish loop must be driven by PUBLISHED_FILES.txt')
+
+    def test_refuses_to_publish_an_unpublished_dataset(self):
+        # Norbeck may not be made available for download. A guard in the script
+        # is the last line of defence if the list is ever wrong.
+        self.assertIn('norbeck.json', self.script,
+                      'build.sh has no guard against publishing norbeck')
+        guard = self.index_of(r'is not publishable')
+        publish = self.index_of(r'mv "data/\$f" \.\./public/')
+        self.assertGreater(guard, publish,
+                           'the guard must run after files are moved')
+        deploy = self.index_of(r'^firebase deploy')
+        self.assertLess(guard, deploy,
+                        'the guard must run before the deploy')
+
+
+class DeployScriptsTest(unittest.TestCase):
+    """Every script that copies into public/ must obey PUBLISHED_FILES.txt."""
+
+    def test_no_script_publishes_a_hardcoded_file_list(self):
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        for name in SCRIPTS:
+            script = (repo_root / 'build' / name).read_text(encoding='utf-8')
+            with self.subTest(script=name):
+                self.assertIn(
+                    'PUBLISHED_FILES.txt', script,
+                    f'{name} does not consult PUBLISHED_FILES.txt, so it can '
+                    'publish a dataset that must not be served')
+                self.assertIn(
+                    'is not publishable', script,
+                    f'{name} has no guard against an unpublished dataset '
+                    'reaching public/')
+
+    def test_no_script_copies_norbeck_by_name(self):
+        # The exact bug: `cp data/norbeck.json ../public/` in a literal list.
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        copy_re = re.compile(
+            r'(cp|mv)\s+[^\n]*norbeck\.json[^\n]*public', re.IGNORECASE)
+        for name in SCRIPTS:
+            script = (repo_root / 'build' / name).read_text(encoding='utf-8')
+            with self.subTest(script=name):
+                self.assertIsNone(
+                    copy_re.search(script),
+                    f'{name} copies norbeck.json into public/')
 
 
 if __name__ == '__main__':
