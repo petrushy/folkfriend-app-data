@@ -7,6 +7,7 @@ published files is `assemble_datasets.py`.
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -131,11 +132,24 @@ def clean_thesession_data(tune_data):
     return tune_data
 
 
+def midi_cache_name(setting):
+    """The cached MIDI's file name: setting id AND content.
+
+    It used to be the setting id alone. A setting edited on thesession keeps
+    its id, so the build reused the MIDI of the old notes and the edited tune
+    kept its old contour for good — 285 settings in the October 2026 update
+    alone. The digest covers everything contour_for_setting reads.
+    """
+    digest = hashlib.sha1('\x00'.join(
+        str(setting.get(k, '')) for k in ('abc', 'meter', 'mode')
+    ).encode('utf-8')).hexdigest()[:12]
+    return f'{setting["setting_id"]}-{digest}.midi'
+
+
 def generate_midi_contour(args):
     """process_map worker. Module-level so it is picklable."""
     setting, midis_path = args
-    midi_out_path = os.path.join(midis_path,
-                                 f'{setting["setting_id"]}.midi')
+    midi_out_path = os.path.join(midis_path, midi_cache_name(setting))
     # thesession ABC is always in eighth notes; there is no L: field in the
     # upstream JSON to read.
     contour = contour_for_setting(
