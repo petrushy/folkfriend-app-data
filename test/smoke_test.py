@@ -121,7 +121,7 @@ EXPECTED = {
 
 # Built, but never served — Norbeck's terms forbid making the ABC files
 # available for download on a web page. It is imported by hand in the app.
-UNPUBLISHED = ("norbeck",)
+UNPUBLISHED = ("norbeck", "spillefolk")  # spillefolk: private, see download_spillefolk_data.py
 
 REQUIRED_FIELDS = {"tune_id", "meter", "mode", "abc", "dance", "contour", "origin"}
 MODE_SUFFIXES = ("major", "minor", "dorian", "mixolydian", "lydian",

@@ -45,10 +45,18 @@ DATASETS = {
         'min_settings': 3_000, 'min_aliases': 3_000,
         'max_empty_contour_pct': 5.0, 'source_url_pct': 99.0,
     },
+    'spillefolk': {
+        'min_settings': 2_500, 'min_aliases': 2_500,
+        'max_empty_contour_pct': 5.0, 'source_url_pct': 99.0,
+    },
 }
 
 # Datasets that are built but must never be served. See assemble_datasets.py.
-UNPUBLISHED = ('norbeck',)
+UNPUBLISHED = ('norbeck', 'spillefolk')
+
+# Built only on request (download_spillefolk_data.py), so absent from most
+# builds; validated, and checked for ID collisions, whenever it is present.
+OPTIONAL = ('spillefolk',)
 
 # The legacy merged bundle still shipped for clients predating dataset
 # selection. It is thesession + folkwiki and must never contain norbeck.
@@ -337,7 +345,8 @@ def validate(parent_dir, folkwiki_snapshot=None,
     for ds_id in wanted:
         path = os.path.join(data_dir, f'{ds_id}.json')
         if not os.path.exists(path):
-            missing.append(ds_id)
+            if ds_id not in OPTIONAL:
+                missing.append(ds_id)
             continue
         loaded[ds_id] = validate_dataset(ds_id, path, errors)
 

@@ -1,5 +1,6 @@
 build/data/*
 build/abc2midi
+build/midi2abc
 */__pycache__/*
 *.pyc
 */venv/*
