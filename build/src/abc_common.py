@@ -337,11 +337,18 @@ def extract_primary_voice_body_lines(body_lines):
     return kept if has_voice_markers else body_lines
 
 
-def parse_abc_tune(abc_text, extra_fields=()):
+def parse_abc_tune(abc_text, extra_fields=(), lenient=False,
+                   fallback_title=None):
     """Parse a single ABC tune block and return a dict of extracted fields.
 
     Returns None if the tune is missing required fields (T:, M:, K:) or has an
     empty body.
+
+    `lenient=True` retries a rejected block with `_salvage_abc_tune`, which
+    tolerates the malformed headers hand-written Folkwiki files contain. The
+    salvage only ever runs on a block the strict parse rejected, so it cannot
+    change any tune that already parses. `fallback_title` names a tune whose
+    block has no T: at all, and is only used by the salvage.
 
     `extra_fields` names additional single-letter header fields to capture
     verbatim into the result under `extra[<letter>]` — a list, since ABC allows
@@ -372,6 +379,7 @@ def parse_abc_tune(abc_text, extra_fields=()):
     extra = {f.upper(): [] for f in extra_fields}
     body_lines = []
     in_body = False
+    in_postscript = False
 
     for line in abc_text.splitlines():
         stripped = line.strip()
@@ -379,6 +387,23 @@ def parse_abc_tune(abc_text, extra_fields=()):
             if in_body:
                 body_lines.append(line)
             continue
+
+        # Comments (`%`) and directives (`%%MIDI`, `%%score`, ...) are legal
+        # anywhere in the header. Treating one as the start of the body hid
+        # every M:/K: after it, so the tune was silently dropped — 340 Folkwiki
+        # tunes, e.g. Klockarpolskan (Musik/2964) with `%%MIDI ratio` before
+        # M:. A `%%beginps` block is skipped whole: its PostScript lines carry
+        # no `%` prefix. This only recovers tunes that previously returned
+        # None, so no existing setting's ID or block index changes.
+        if not in_body:
+            if in_postscript:
+                if stripped.startswith('%%endps'):
+                    in_postscript = False
+                continue
+            if stripped.startswith('%'):
+                if stripped.startswith('%%beginps'):
+                    in_postscript = True
+                continue
 
         # Once we hit a non-header line (doesn't match 'X:', 'T:', etc.)
         # we're in the body.  A line with a colon in position 1 is a header.
@@ -414,11 +439,158 @@ def parse_abc_tune(abc_text, extra_fields=()):
             body_lines.append(line)
 
     if not titles or meter is None or mode is None:
-        return None
+        return (_salvage_abc_tune(abc_text, extra_fields, fallback_title)
+                if lenient else None)
 
     abc_body = '\n'.join(extract_primary_voice_body_lines(body_lines)).strip()
     if not abc_body:
+        return (_salvage_abc_tune(abc_text, extra_fields, fallback_title)
+                if lenient else None)
+
+    return {
+        'titles': titles,
+        'meter': meter,
+        'note_len': note_len,
+        'has_note_len': has_note_len,
+        'mode': mode,
+        'dance': dance,
+        'origin': origin,
+        'composer': composer,
+        'abc_body': abc_body,
+        'extra': extra,
+    }
+
+
+# A salvaged tune must still carry enough melody to be worth matching; this
+# keeps out placeholder pages such as a body of just `|:abcd:|`.
+SALVAGE_MIN_NOTES = 16
+
+_FIELD_LINE_RE = re.compile(r'^([A-Za-z]):')
+_INLINE_METER_RE = re.compile(r'\[M:\s*([^\]]+)\]')
+
+
+def _count_notes(lines):
+    text = '\n'.join(l for l in lines if not _FIELD_LINE_RE.match(l.strip()))
+    text = re.sub(r'"[^"]*"|![^!]*!|\[[A-Za-z]:[^\]]*\]', '', text)
+    return len(re.findall(r'[A-Ga-g]', text))
+
+
+def _first_voice_with_notes(body_lines):
+    """The first voice section that actually holds music, for a body whose
+    primary voice is empty (a `V:1` declared but only `V:2` written out, as in
+    Folkwiki's "andrastämman" pages)."""
+    voice_re = re.compile(r'^\s*V:\s*([^\s]+)')
+    sections = collections.OrderedDict()
+    active = None
+    for line in body_lines:
+        match = voice_re.match(line)
+        if match:
+            active = match.group(1)
+            sections.setdefault(active, [])
+            continue
+        sections.setdefault(active, []).append(line)
+    for lines in sections.values():
+        if _count_notes(lines):
+            return lines
+    return []
+
+
+def _salvage_abc_tune(abc_text, extra_fields=(), fallback_title=None):
+    """Parse a block the strict parser rejected, tolerating malformed headers.
+
+    The strict parser ends the header at K: or at the first line that is not a
+    field. Hand-written Folkwiki files break both rules in ways ABC tools
+    tolerate, so here the header runs until the first music line AFTER K:,
+    and before K: nothing can be music:
+      - a non-field line before K: is skipped (a wrapped N: continuation,
+        `#Q:`, a typo such as `T(SvL ...)` or `OM:Nykvarn`);
+      - fields after K: (M:, L:, even T:) are still header until music starts;
+      - an empty M:/L: is treated as absent;
+      - no M: falls back to the first inline `[M:...]`, then to 4/4, which is
+        what abc2midi assumes anyway;
+      - no T: falls back to `fallback_title`;
+      - an empty primary voice falls back to the first voice with notes.
+    K: is still required, so a preamble block is still rejected.
+    """
+    titles = []
+    meter = None
+    note_len = '1/8'
+    has_note_len = False
+    mode = None
+    dance = ''
+    origin = ''
+    composer = ''
+    extra = {f.upper(): [] for f in extra_fields}
+    body_lines = []
+    in_body = False
+    in_postscript = False
+
+    for line in abc_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if in_body:
+                body_lines.append(line)
+            continue
+
+        if not in_body:
+            if in_postscript:
+                if stripped.startswith('%%endps'):
+                    in_postscript = False
+                continue
+            if stripped.startswith('%'):
+                if stripped.startswith('%%beginps'):
+                    in_postscript = True
+                continue
+
+            match = _FIELD_LINE_RE.match(stripped)
+            # V: is left to the body, where extract_primary_voice_body_lines
+            # needs to see it.
+            if match and match.group(1).upper() != 'V':
+                field = match.group(1).upper()
+                value = stripped[2:].strip()
+                if field == 'T' and value:
+                    titles.append(value)
+                elif field == 'M' and value and meter is None:
+                    meter = value
+                elif field == 'L' and value:
+                    note_len = value
+                    has_note_len = True
+                elif field == 'K' and value and mode is None:
+                    mode = normalize_mode(value)
+                elif field == 'R':
+                    dance = value.lower().strip()
+                elif field == 'O':
+                    origin = value.strip()
+                elif field == 'C':
+                    composer = value.strip()
+                if field in extra:
+                    extra[field].append(value)
+                continue
+
+            if mode is None:
+                continue
+            in_body = True
+
+        body_lines.append(line)
+
+    if mode is None:
         return None
+
+    if not titles and fallback_title:
+        titles = [fallback_title]
+    if not titles:
+        return None
+
+    primary = extract_primary_voice_body_lines(body_lines)
+    if not _count_notes(primary):
+        primary = _first_voice_with_notes(body_lines)
+    if _count_notes(primary) < SALVAGE_MIN_NOTES:
+        return None
+    abc_body = '\n'.join(primary).strip()
+
+    if meter is None:
+        inline = _INLINE_METER_RE.search(abc_body)
+        meter = inline.group(1).strip() if inline else '4/4'
 
     return {
         'titles': titles,
