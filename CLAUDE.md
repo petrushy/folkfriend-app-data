@@ -66,7 +66,13 @@ legacy fallback, and the ranges are not what they look like:
 |---|---|---|
 | thesession | < 30,000 | < 60,000 |
 | folkwiki | 1,000,000 – ~1,678,715,901 | 2,000,000 – ~1,679,715,901 |
-| norbeck | 3,000,000,000 – ~7.3e9 | 8,000,000,000 – ~12.3e9 |
+| norbeck | 3,000,000,000 – ~7.3e9 | 8,000,000,000 – ~4.4e11 |
+| spillefolk | 1e12 – ~1.0043e12 | 2e12 – ~2.43e12 |
+
+(Norbeck's setting range was listed here as "~12.3e9" until October 2026. It
+is `base + offset * 100 + section`, so it really reaches 4.37e11 — a source
+placed just above 12.3e9 would have collided with it. Spillefolk starts at 1e12
+for that reason.)
 
 **Folkwiki is not a small block.** `stable_folkwiki_id` is
 `base + int(hexhash,16)*100 + block` with a six-hex-digit hash, so it reaches
@@ -98,6 +104,7 @@ build/
   env.sh                    # Activates the Python virtualenv
   requirements.txt
   abc2midi                  # Required binary (NOT in git — symlink it yourself; MUST be 5.02, see below)
+  midi2abc                  # Only for spillefolk (NOT in git) — abcmidi's, built from the same source
   data/                     # Generated at build time (NOT in git)
     tunes.json / aliases.json         # thesession, from GitHub
     midis/                            # cached per-setting .midi, keyed on setting_id
@@ -119,6 +126,9 @@ build/
     download_norbeck_data.py     # Resolves + downloads hnYYYYMM.zip, extracts it
     discover_norbeck_refs.py     # Scrapes valid display.asp (rhythm, ref) pairs
     build_norbeck_data.py        # → data/norbeck.json
+    download_spillefolk_data.py  # Catalogue + MIDI from spillefolk.dk (private dataset)
+    spillefolk_midi.py           # MIDI → melody contour, and → display ABC via midi2abc
+    build_spillefolk_data.py     # → data/spillefolk.json   (NOT published)
     assemble_datasets.py         # → datasets.json + legacy bundle + nud-meta.json
     validate_output.py           # Per-dataset checks + cross-dataset ID disjointness
 archive/folkwiki/<date>.tar.gz   # Committed folkwiki snapshots (~5 MB each) — the build's folkwiki input
@@ -127,6 +137,8 @@ test/
   build_script_test.py       # build.sh ordering invariants
   folkwiki_pipeline_test.py  # folkwiki IDs + shared parser behaviour
   folkwiki_snapshot_test.py  # archiver, building from a snapshot, abc2midi retry
+  spillefolk_test.py         # spillefolk catalogue parsing, MIDI → contour/ABC, IDs, never published
+  thesession_build_test.py   # thesession MIDI cache keyed on content
   norbeck_pipeline_test.py   # abc_common (escapes, L:, ornaments) + norbeck IDs/URLs
   smoke_test.py              # Post-deploy live endpoints + local data integrity
 firebase.json                # Hosting config (serves public/, CORS on **/*.json)
@@ -430,6 +442,56 @@ Folkwiki wiki pages use numeric IDs in URLs: `http://www.folkwiki.se/Musik/4237`
 **`app/src/js/source.mjs`** (new helper module) handles URL construction for both thesession and folkwiki tunes. `Tune.vue` and `Favourites.vue` use it. `worker.js` extracts `source_url` as a sideband field (same pattern as `abc`) and re-attaches it in `settingsFromTuneID`.
 
 ---
+
+## Spillefolk — a private dataset (October 2026)
+
+[Folkets Hus Spillefolk](https://spillefolk.dk/nodesamlingen/) is a Danish
+club's collection: 3,339 tunes in October 2026 — 1,459 Danish, 780 Swedish,
+54 Norwegian, 5 Finnish, 1,033 with no country. **Built for personal import
+only, exactly like Norbeck**: never in `datasets.json`, `public/` or the legacy
+bundle, and checked by `validate_output.py` and `smoke_test.py`. Their rights
+page shares the tunes "from instrument to ear" for non-commercial use and notes
+living composers; it does not grant republishing the collection.
+
+```sh
+cd build && . env.sh
+python src/download_spillefolk_data.py .   # ~1 h the first time; resumable
+python src/build_spillefolk_data.py .      # → data/spillefolk.json, stamped, importable
+```
+
+Then Settings → "Add a database" in the app. `assemble_datasets.py` also knows
+it (unpublished, optional), so a full build checks its IDs for collisions when
+it is present; `validate_output.py` skips it when absent.
+
+Things that were not obvious:
+
+- **The catalogue comes from two list pages**, `listnode.php?KnapTryk=medegn`
+  and `...=udenegn` (tunes with / without a region), which together list every
+  tune with its country, regions and dance heading. The live search
+  (`searchTxt.php`) answers nothing outside a browser session. The site
+  returns **HTTP 404 for PHP pages that render normally**, so content is
+  checked, not status.
+- **MIDI is the one format every tune has.** About a quarter also have
+  MusicXML/`.mscz` (`xml/<key>.xml`, `mscz/<key>.mscz`, not linked from the
+  page). The contour comes straight from the MIDI's melody track; display ABC
+  from `midi2abc`.
+- **The melody is the first track with notes.** Files carry second voices and
+  chord tracks; double stops keep the top note; a note-on with velocity 0 is a
+  note-off (midi.py's reader alone would leave those notes hanging).
+- **midi2abc needs help to be readable:** its key guess (`-gk`) only counts
+  sharps and names the major key, so the mode is named from the melody's last
+  note (a Dorian polska is `K:Ddor`, not `K:C`). About a third of the files
+  carry a time signature with numerator 1 (1/4, 1/8, 1/16), drawn as one-beat
+  bars; those get their dance's usual meter via `-m`. Leading rest bars are
+  dropped and chords reduced to the top note.
+- **Known limitation: upbeats.** midi2abc counts bars from time zero and the
+  MIDI does not mark the first downbeat, so a tune with a pickup can have its
+  bar lines shifted, with ties across them. The notes and the contour are
+  right; only the drawn barring is off. The tune's source link opens the
+  original score. Using the MusicXML where it exists would fix that quarter.
+- **Overlap with folkwiki**, measured melodically (October 2026): 54% of the
+  780 Swedish tunes are already in folkwiki, 41% are new, 5% uncertain. Most of
+  the new value is the Danish material.
 
 ## Norbeck integration — DONE (August 2026)
 

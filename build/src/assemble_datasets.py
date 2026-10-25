@@ -64,6 +64,14 @@ DATASETS = (
      'source': 'norbeck.json', 'published': False,
      'label': 'Norbeck',
      'description': 'Henrik Norbeck\u2019s Irish and Swedish collection'},
+    # Optional and private: built only by someone who ran
+    # download_spillefolk_data.py; omitted (with a warning) otherwise.
+    {'id': 'spillefolk', 'filename': 'spillefolk.json',
+     'source': 'spillefolk.json', 'published': False,
+     'label': 'Spillefolk',
+     'description': 'Danish and Nordic tunes from Folkets Hus Spillefolk '
+                    '(spillefolk.dk) \u2014 personal use, not for '
+                    'redistribution'},
 )
 
 # Written next to the outputs so build.sh knows exactly which files may be
@@ -281,10 +289,13 @@ def write_legacy_bundle(loaded, entries, out_dir):
         f'Legacy bundle ({" + ".join(included)}): {len(settings)} settings, '
         f'{meta["size"] / 1e6:.1f} MB, v{legacy_v}'
     )
-    if 'norbeck' in included:
+    private = [i for i in included
+               if not next(d for d in DATASETS if d['id'] == i)['published']]
+    if private:
         raise SystemExit(
-            'FATAL: norbeck must not be in the legacy merged bundle — clients '
-            'reading it cannot opt out. See the module docstring.'
+            f'FATAL: {", ".join(private)} must not be in the legacy merged '
+            'bundle — clients reading it cannot opt out. See the module '
+            'docstring.'
         )
 
 
