@@ -198,10 +198,29 @@ class Note:
         return pitch - ff_config.MIDI_LOW
 
 
+# abc2midi (5.02 and 5.07 alike) crashes NON-DETERMINISTICALLY on some tunes:
+# folkwiki Musik/2164 converts on roughly 1 run in 10, with or without -NGUI,
+# and a crash writes no file. The published contours for those tunes came from
+# a lucky run long ago; a fresh MIDI cache turned them into empty contours —
+# tunes that can never be found by playing them. A successful run produces the
+# same MIDI whichever attempt it was, so retrying is safe.
+ABC_TO_MIDI_ATTEMPTS = 25
+
+
 def abc_to_midi(abc, midi_path, clean=True):
     """Convert ABC text into a midi file."""
+    for attempt in range(ABC_TO_MIDI_ATTEMPTS):
+        _run_abc2midi(abc, midi_path, clean)
+        if os.path.exists(midi_path):
+            if attempt:
+                log.info(f'abc2midi succeeded for {midi_path} on attempt '
+                         f'{attempt + 1}')
+            return
+    log.warning(f'abc2midi produced nothing for {midi_path} in '
+                f'{ABC_TO_MIDI_ATTEMPTS} attempts')
 
-    # Generate MIDI file with chords and actual instruments
+
+def _run_abc2midi(abc, midi_path, clean):
     try:
         captured = subprocess.run([
             './abc2midi', '-',
@@ -218,9 +237,11 @@ def abc_to_midi(abc, midi_path, clean=True):
             f'{midi_path}'
         )
         return
-    stderr = captured.stderr.decode('utf-8')
+    stderr = captured.stderr.decode('utf-8', errors='replace')
     if stderr:
-        log.warning(stderr, file=sys.stderr)
+        # (This passed `file=sys.stderr`, which logging rejects with a
+        # TypeError — so any abc2midi complaint crashed the worker.)
+        log.warning(stderr)
 
 
 def midi_as_csv(midi_path):

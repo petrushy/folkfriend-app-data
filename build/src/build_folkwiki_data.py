@@ -97,66 +97,121 @@ def generate_midi_contour(args):
 # Main build function
 # ---------------------------------------------------------------------------
 
-def build_folkwiki_data(parent_dir):
+# A six-hex hash can be shared by two different tunes (eb995b is both
+# "Polonesse Comp a Linblad", Musik/3837, and "Vals efter Kopparslagaren",
+# Musik/6060). The file on the lowest-numbered page keeps the plain IDs —
+# which is the one a hash-keyed build already published — and each further
+# file gets its block indices shifted by this much, so the IDs stay distinct
+# and stable. Source files hold one or two blocks, far below the offset.
+COLLISION_BLOCK_OFFSET = 50
+
+
+def _page_sort_key(page):
+    return (0, int(page), '') if page.isdigit() else (1, 0, page)
+
+
+def iter_snapshot_files(snapshot_dir):
+    """Yield one dict per distinct titled cache file in a folkwiki snapshot
+    (see archive_folkwiki.py), in a deterministic order.
+
+    Untitled blocks (32-hex cache names: variations printed under a tune) are
+    archived but not indexed, as before. Where the site's cache file was
+    damaged by wiki markup — `$[K:F]` and `{(B/c/)}` are PmWiki syntax, and
+    the renderer rewrites them (Musik/6448, Musik/2386) — the tune is taken
+    from the page source instead, which is what the author wrote. It is
+    wrapped exactly as the cache wraps it, so the block index, and with it
+    the ID, is unchanged.
+    """
+    snapshot_dir = pathlib.Path(snapshot_dir)
+    index = json.loads((snapshot_dir / 'index.json').read_text(encoding='utf-8'))
+
+    owners = {}  # file -> (page, link)
+    for page in sorted(index, key=_page_sort_key):
+        entry = index[page]
+        if entry.get('status') != 'ok':
+            continue
+        for link in entry.get('abc', []):
+            if link.get('titled'):
+                owners.setdefault(link['file'], (page, link))
+
+    files_by_hash = {}
+    for file, (page, link) in owners.items():
+        files_by_hash.setdefault(link['hexhash'], []).append((page, file))
+
+    for hexhash in sorted(files_by_hash):
+        ranked = sorted(files_by_hash[hexhash],
+                        key=lambda pf: (_page_sort_key(pf[0]), pf[1]))
+        for rank, (page, file) in enumerate(ranked):
+            link = owners[file][1]
+            text = (snapshot_dir / 'cache' / file).read_text(
+                encoding='utf-8', errors='replace')
+            if link.get('matches_source') is False:
+                text = _source_block_for(snapshot_dir, page, text)
+            yield {
+                'hexhash': hexhash,
+                'block_offset': rank * COLLISION_BLOCK_OFFSET,
+                'text': text,
+                'source_url': 'http://www.folkwiki.se/Musik/'
+                              + urllib.parse.quote(page),
+                'fallback_title': title_from_manifest_url(link['url'], hexhash),
+            }
+
+
+def _source_block_for(snapshot_dir, page, cache_text):
+    import difflib
+    from archive_folkwiki import MUSIC_BLOCK_RE, safe_name
+    source = (snapshot_dir / 'pages' / f'{safe_name(page)}.txt').read_text(
+        encoding='utf-8', errors='replace')
+    blocks = [b.strip('\n') for b in MUSIC_BLOCK_RE.findall(source)]
+    best = max(blocks, key=lambda b: difflib.SequenceMatcher(
+        None, b, cache_text).ratio())
+    log.info(f'{page}: cache file damaged by wiki markup; using page source')
+    return f'%%abc-charset utf-8\n\n{best}\n'
+
+
+def latest_snapshot(parent_dir):
+    root = pathlib.Path(parent_dir, 'data', 'folkwiki-snapshots')
+    dated = sorted(d for d in root.glob('????-??-??') if d.is_dir()) \
+        if root.exists() else []
+    return dated[-1] if dated else None
+
+
+def build_folkwiki_data(parent_dir, snapshot_dir=None):
     folkwiki_dir = os.path.join(parent_dir, 'data', 'folkwiki')
-    manifest_path = os.path.join(folkwiki_dir, 'manifest.json')
-    pageid_path = os.path.join(folkwiki_dir, 'hexhash_to_pageid.json')
     midis_dir = os.path.join(folkwiki_dir, 'midis')
     output_path = os.path.join(parent_dir, 'data', 'folkwiki.json')
 
     pathlib.Path(midis_dir).mkdir(parents=True, exist_ok=True)
 
-    if not os.path.exists(manifest_path):
-        log.error(f'No manifest found at {manifest_path}. '
-                  'Run download_folkwiki_data.py first.')
-        return
-
-    with open(manifest_path, 'r', encoding='utf-8') as f:
-        manifest = json.load(f)
-
-    hexhash_to_pageid = {}
-    if os.path.exists(pageid_path):
-        with open(pageid_path, 'r', encoding='utf-8') as f:
-            hexhash_to_pageid = json.load(f)
-        log.info(f'Loaded {len(hexhash_to_pageid)} hexhash→pageID mappings')
-
-    log.info(f'Processing {len(manifest)} folkwiki entries from manifest')
+    snapshot_dir = snapshot_dir or latest_snapshot(parent_dir)
+    if not snapshot_dir or not os.path.exists(
+            os.path.join(snapshot_dir, 'index.json')):
+        log.error('No folkwiki snapshot found. Run '
+                  '`python src/archive_folkwiki.py . --unpack` first.')
+        raise SystemExit(1)
+    log.info(f'Building from snapshot {snapshot_dir}')
 
     # --- Parse all ABC files into flat setting dicts ---
     raw_settings = []   # list of dicts with all parsed fields + assigned IDs
     raw_aliases = {}    # tune_id -> [name strings]
 
-    tune_counter = 0
-    setting_counter = 0
-
-    for hexhash in sorted(manifest.keys()):
-        abc_path = os.path.join(folkwiki_dir, f'{hexhash}.abc')
-        if not os.path.exists(abc_path):
-            log.warning(f'Missing file for {hexhash}, skipping')
-            continue
-
-        with open(abc_path, 'r', encoding='utf-8', errors='replace') as f:
-            abc_text = f.read()
-
-        tune_blocks = split_abc_tunes(abc_text)
+    for source in iter_snapshot_files(snapshot_dir):
+        hexhash = source['hexhash']
+        tune_blocks = split_abc_tunes(source['text'])
 
         for tune_block_index, block in enumerate(tune_blocks):
             parsed = parse_abc_tune(
                 block,
                 lenient=True,
-                fallback_title=title_from_manifest_url(
-                    manifest[hexhash]['url'], hexhash),
+                fallback_title=source['fallback_title'],
             )
             if parsed is None:
                 log.debug(f'Skipping unparseable tune block in {hexhash}')
                 continue
 
-            tune_id = stable_folkwiki_id(hexhash, tune_block_index, TUNE_ID_BASE)
-            setting_id = stable_folkwiki_id(
-                hexhash, tune_block_index, SETTING_ID_BASE
-            )
-            tune_counter += 1
-            setting_counter += 1
+            block_id = tune_block_index + source['block_offset']
+            tune_id = stable_folkwiki_id(hexhash, block_id, TUNE_ID_BASE)
+            setting_id = stable_folkwiki_id(hexhash, block_id, SETTING_ID_BASE)
 
             raw_settings.append({
                 'setting_id': setting_id,
@@ -169,11 +224,7 @@ def build_folkwiki_data(parent_dir):
                 'dance': parsed['dance'],
                 'origin': parsed['origin'],
                 'composer': parsed['composer'],
-                'source_url': (
-                    f'http://www.folkwiki.se/Musik/{hexhash_to_pageid[hexhash]}'
-                    if hexhash in hexhash_to_pageid
-                    else manifest[hexhash]['url']
-                ),
+                'source_url': source['source_url'],
             })
 
             # Build aliases from all T: fields, canonical name first
@@ -232,9 +283,13 @@ def build_folkwiki_data(parent_dir):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Build folkwiki contour index from downloaded ABC files')
+        description='Build folkwiki contour index from a folkwiki snapshot')
     parser.add_argument(
         'dir', help='Parent directory for the `data` directory'
     )
+    parser.add_argument(
+        '--snapshot',
+        help='Snapshot directory to build from (default: the newest under '
+             'data/folkwiki-snapshots/)')
     args = parser.parse_args()
-    build_folkwiki_data(args.dir)
+    build_folkwiki_data(args.dir, args.snapshot)

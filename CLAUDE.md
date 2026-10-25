@@ -17,7 +17,7 @@ let the user choose which datasets to download and search:
 |---|---|
 | `datasets.json` | the manifest: each dataset's `id`, `filename`, `v`, `date`, `size`, `settings`, `tunes` |
 | `thesession.json` | 54,293 settings / 23,017 tunes — 34.8 MB |
-| `folkwiki.json` | 8,484 / 8,484 — 7.3 MB |
+| `folkwiki.json` | 7,287 / 7,287 — 6.4 MB (from the 2026-10-25 snapshot) |
 | `norbeck.json` | 3,472 / 3,472 — 3.1 MB |
 | `folkfriend-non-user-data.json` | **legacy** merged bundle, thesession + folkwiki only |
 | `nud-meta.json` | **legacy** metadata for the above |
@@ -97,11 +97,12 @@ build/
   regenerate_dataset.sh     # Full refresh from upstream, ignoring change detection
   env.sh                    # Activates the Python virtualenv
   requirements.txt
-  abc2midi                  # Required binary (NOT in git — symlink it yourself)
+  abc2midi                  # Required binary (NOT in git — symlink it yourself; MUST be 5.02, see below)
   data/                     # Generated at build time (NOT in git)
     tunes.json / aliases.json         # thesession, from GitHub
     midis/                            # cached per-setting .midi, keyed on setting_id
-    folkwiki/                         # manifest.json, {hexhash}.abc, midis/ (fw_ prefix)
+    folkwiki-snapshots/<date>/        # unpacked snapshot: pages/, cache/, index.json, REPORT.txt
+    folkwiki/midis/                   # cached per-setting .midi (fw_ prefix)
     norbeck/                          # manifest.json, hnYYYYMM.zip, abc/, site_refs.json, midis/ (hn_ prefix)
     hashes/                           # per-dataset input hashes for change detection
     thesession.json / folkwiki.json / norbeck.json
@@ -112,19 +113,20 @@ build/
     ff_config.py                 # MIDI pitch range and mapping constants
     download_thesession_data.py  # Fetches tunes.json / aliases.json
     build_thesession_data.py     # → data/thesession.json   (was build_non_user_data.py)
-    download_folkwiki_data.py    # Wayback CDX discovery + live download
-    discover_folkwiki_pageids.py # hexhash → wiki page id
-    fill_missing_folkwiki.py     # Gap-fill for Latin-1 percent-encoded URLs
-    build_folkwiki_data.py       # → data/folkwiki.json
+    archive_folkwiki.py          # Verified snapshot of folkwiki.se → archive/folkwiki/<date>.tar.gz
+    download_folkwiki_data.py    # Unpacks the newest committed snapshot (no network)
+    build_folkwiki_data.py       # snapshot → data/folkwiki.json
     download_norbeck_data.py     # Resolves + downloads hnYYYYMM.zip, extracts it
     discover_norbeck_refs.py     # Scrapes valid display.asp (rhythm, ref) pairs
     build_norbeck_data.py        # → data/norbeck.json
     assemble_datasets.py         # → datasets.json + legacy bundle + nud-meta.json
     validate_output.py           # Per-dataset checks + cross-dataset ID disjointness
+archive/folkwiki/<date>.tar.gz   # Committed folkwiki snapshots (~5 MB each) — the build's folkwiki input
 public/                          # Deployed verbatim; the merged bundle is gitignored
 test/
   build_script_test.py       # build.sh ordering invariants
   folkwiki_pipeline_test.py  # folkwiki IDs + shared parser behaviour
+  folkwiki_snapshot_test.py  # archiver, building from a snapshot, abc2midi retry
   norbeck_pipeline_test.py   # abc_common (escapes, L:, ornaments) + norbeck IDs/URLs
   smoke_test.py              # Post-deploy live endpoints + local data integrity
 firebase.json                # Hosting config (serves public/, CORS on **/*.json)
@@ -242,7 +244,72 @@ python3 test/smoke_test.py          # needs a deploy for its live checks
 
 ---
 
-## Folkwiki integration — COMPLETE
+## Folkwiki snapshot — the folkwiki input since October 2026
+
+**The build's folkwiki input is a committed snapshot of the site**, not the
+Wayback-CDX download it replaced. `archive_folkwiki.py` captures the Musik
+group into `build/data/folkwiki-snapshots/<date>/` and, only if every page was
+verified, packs it into `archive/folkwiki/<date>.tar.gz` (~5 MB), which is
+committed. `download_folkwiki_data.py` unpacks the newest archive; a routine
+`build.sh` never touches folkwiki.se, which is slow and flaky.
+
+```sh
+cd build && . env.sh
+python src/archive_folkwiki.py .     # ~2 h at 4 workers; resumable — re-run the same day to retry
+git add ../archive/folkwiki/<date>.tar.gz
+```
+
+What the snapshot holds, per page: the raw `?action=source` text (the
+authoritative copy), every `pub/cache/*.abc` file the page links, and an
+`index.json` entry with status, last-modified time and checksums. The page
+list comes from `Musik/RecentChanges?action=source`, not from an ID range.
+
+**What the old CDX pipeline got wrong** (measured against the 2026-10-25
+snapshot), which is why it was replaced rather than patched:
+
+- **~1,600 superseded versions** of edited tunes were indexed as separate
+  tunes. Editing a page writes a NEW cache file and leaves the old one; CDX saw
+  both. 1,478 shared a title with a live tune. They are gone from the index.
+- **Pages past Musik/6412 were never seen** — the page-id crawl stopped at 6500.
+- **Untitled blocks** (cached as a bare 32-hex name) never matched its regex.
+  They are archived (81) but still not indexed.
+- **Files were never re-fetched**, so an edited tune stayed at its old version.
+
+Things the archiver had to learn, each from a real page:
+
+- **Empty source is not proof a page is gone.** `?action=source` answers 200
+  with an empty body for a missing page. A page is `absent` only when its HTML
+  404s, and `blank` (Musik/1535, 2859) only when the rendered body agrees.
+- **A cache file is checked against the page source.** It must equal one of the
+  page's `(:music:)` blocks, ignoring blank lines and free-text lines where the
+  renderer rewrites wiki links. Two identical blocks share one file (1634).
+- **The six-hex hash COLLIDES across tunes.** `eb995b` is both "Polonesse Comp a
+  Linblad" (3837) and "Vals efter Kopparslagaren" (6060). Cache files are stored
+  under the site's file name, never the hash, and the builder gives the
+  lower-numbered page the plain IDs (the ones already published) and shifts the
+  other's block index by `COLLISION_BLOCK_OFFSET`.
+- **The site's own cache can be wrong.** PmWiki rewrites `$[...]` and `{(...)}`
+  inside ABC (Musik/6448, 2386); for those the builder uses the page source.
+
+The ID scheme is unchanged (`stable_folkwiki_id` over the cache file's hexhash
+and block index), so every tune that survived kept its ID — and all 6,847 kept
+an identical contour.
+
+### abc2midi: version AND flakiness
+
+`build.sh` requires **5.02**; Homebrew moved to 5.07 (October 2026), which
+segfaults on tunes 5.02 converts. A 5.02 binary is built from
+`sshlien/abcmidi` commit `d486659` (`./configure && make abc2midi`).
+
+Both versions also crash **non-deterministically** on a handful of tunes
+(Musik/2164 converts about one run in ten). A crash writes no file, which
+became an empty contour — a tune that can never be found by playing it. The
+published contours for those came from a lucky run long ago, and a fresh MIDI
+cache lost them. `midi.abc_to_midi` now retries up to 25 times; a successful
+run is deterministic, so the result matches the old contour exactly. That also
+gave contours to 14 tunes that never had one.
+
+## Folkwiki integration — COMPLETE (superseded input pipeline — see above)
 
 Swedish folk music from folkwiki.se, now published as its own `folkwiki.json`
 (and merged into the legacy bundle alongside thesession).
