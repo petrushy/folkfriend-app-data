@@ -644,6 +644,54 @@ def strip_abc_ornaments(abc_body):
     return abc_body
 
 
+_NOTE_LEN_RE = re.compile(r'(\d+)\s*/\s*(\d+)')
+
+
+def abc_for_display(parsed):
+    """The `abc` stored for the app to draw and play: the body, prefixed with
+    the source's own L: line when it had one.
+
+    The setting carries `meter` and `mode` as fields but has no field for the
+    unit note length, and the app writes `L:1/8` in front of any ABC with no
+    L: line of its own. So a body stored without its L: was drawn and played
+    at the wrong length: every `L:1/16` tune at double length — 3,171 folkwiki
+    and 404 Norbeck settings, e.g. folkwiki Musik/2906 showing six beats in a
+    3/4 bar. The app already honours an L: in the body (AbcDisplay,
+    ResultRow, FavouriteRow, the favourites export), so no app change is
+    needed. The contour never had this problem: it is built from note_len
+    directly.
+
+    A source with no L: gets the ABC standard default written out — 1/16 when
+    the meter is below 3/4, else 1/8 — because the app's blanket 1/8 is wrong
+    for 2/4 and 3/8 tunes, and the standard is what folkwiki's own renderer
+    (abcm2ps) and Norbeck's contour both apply.
+
+    A malformed L: (`18`, `1/`, `1/16'`) is reduced to its fraction when one
+    is there, and left out otherwise, which leaves the app's 1/8 default.
+    """
+    body = parsed['abc_body']
+    if not parsed.get('has_note_len'):
+        default = _standard_note_len(parsed.get('meter'))
+        return f'L:{default}\n{body}' if default else body
+    match = _NOTE_LEN_RE.search(parsed['note_len'] or '')
+    if not match or int(match.group(1)) == 0 or int(match.group(2)) == 0:
+        return body
+    return f'L:{match.group(1)}/{match.group(2)}\n{body}'
+
+
+def _standard_note_len(meter):
+    """ABC 2.1 §3.1.7: with no L:, the unit is 1/16 if the meter's value is
+    below 0.75 and 1/8 otherwise. None when the meter cannot be read."""
+    meter = (meter or '').strip()
+    if meter in ('C', 'C|'):
+        return '1/8'
+    match = _NOTE_LEN_RE.match(meter)
+    if not match or int(match.group(2)) == 0:
+        return None
+    value = int(match.group(1)) / int(match.group(2))
+    return '1/16' if value < 0.75 else '1/8'
+
+
 def contour_for_setting(abc_body, meter, mode, note_len, midi_out_path):
     """ABC body -> quaver-quantised contour string. '' on any failure.
 

@@ -170,6 +170,31 @@ class FolkwikiPipelineTest(unittest.TestCase):
                 '_Sl%E4ngpolska_efter_FutteriPetter_392126.abc', '392126'),
             'Slängpolska efter FutteriPetter')
 
+    def test_abc_for_display_keeps_the_source_unit_note_length(self):
+        # Musik/2906 is L:1/16; stored without it, the app drew G3F as a
+        # dotted quarter and an eighth: six beats in a 3/4 bar.
+        parsed = self.abc_common.parse_abc_tune(
+            'X:1\nT:Polska\nM:3/4\nL:1/16\nK:G\n{D}G3F A2G2 B2A2 |')
+        self.assertEqual(self.abc_common.abc_for_display(parsed),
+                         'L:1/16\n{D}G3F A2G2 B2A2 |')
+
+    def test_abc_for_display_writes_the_standard_default(self):
+        parse = self.abc_common.parse_abc_tune
+        show = self.abc_common.abc_for_display
+        self.assertEqual(show(parse('X:1\nT:a\nM:2/4\nK:D\nAB cd |')),
+                         'L:1/16\nAB cd |')
+        self.assertEqual(show(parse('X:1\nT:a\nM:3/4\nK:D\nAB cd |')),
+                         'L:1/8\nAB cd |')
+        self.assertEqual(show(parse('X:1\nT:a\nM:C|\nK:D\nAB cd |')),
+                         'L:1/8\nAB cd |')
+
+    def test_abc_for_display_repairs_or_drops_a_malformed_note_length(self):
+        show = self.abc_common.abc_for_display
+        base = {'abc_body': 'AB |', 'has_note_len': True, 'meter': '3/4'}
+        self.assertEqual(show({**base, 'note_len': "1/16'"}), 'L:1/16\nAB |')
+        self.assertEqual(show({**base, 'note_len': '18'}), 'AB |')
+        self.assertEqual(show({**base, 'note_len': '1/'}), 'AB |')
+
     def test_parse_abc_tune_keeps_only_primary_voice(self):
         abc = '\n'.join([
             'X:1',
