@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import pathlib
+import re
+import urllib.parse
 
 from abc_common import (
     contour_for_setting,
@@ -53,6 +55,19 @@ def stable_folkwiki_id(hexhash, tune_block_index, base):
 
     offset = int(hexhash, 16) * ID_BLOCK_MULTIPLIER + tune_block_index
     return str(base + offset)
+
+
+def title_from_manifest_url(url, hexhash):
+    """A title for a file whose ABC has no T:, from its cache URL.
+
+    The manifest's `name` field lost its non-ASCII letters to mojibake, but
+    the URL still carries them, percent-encoded as Latin-1:
+    `_Sl%E4ngpolska_efter_FutteriPetter_392126.abc` -> 'Slängpolska efter
+    FutteriPetter'.
+    """
+    stem = urllib.parse.unquote(url.rsplit('/', 1)[-1], encoding='latin-1')
+    stem = re.sub(rf'_?{re.escape(hexhash)}\.abc$', '', stem)
+    return ' '.join(stem.replace('_', ' ').split()) or None
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +140,12 @@ def build_folkwiki_data(parent_dir):
         tune_blocks = split_abc_tunes(abc_text)
 
         for tune_block_index, block in enumerate(tune_blocks):
-            parsed = parse_abc_tune(block)
+            parsed = parse_abc_tune(
+                block,
+                lenient=True,
+                fallback_title=title_from_manifest_url(
+                    manifest[hexhash]['url'], hexhash),
+            )
             if parsed is None:
                 log.debug(f'Skipping unparseable tune block in {hexhash}')
                 continue
