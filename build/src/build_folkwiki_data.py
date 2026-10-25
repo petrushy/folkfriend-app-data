@@ -7,6 +7,7 @@ import re
 import urllib.parse
 
 from abc_common import (
+    abc_for_display,
     contour_for_setting,
     parse_abc_tune,
     split_abc_tunes,
@@ -164,6 +165,7 @@ def build_folkwiki_data(parent_dir):
                 'mode': parsed['mode'],
                 'note_len': parsed['note_len'],
                 'abc_body': parsed['abc_body'],
+                'abc_display': abc_for_display(parsed),
                 'dance': parsed['dance'],
                 'origin': parsed['origin'],
                 'composer': parsed['composer'],
@@ -195,7 +197,7 @@ def build_folkwiki_data(parent_dir):
             'tune_id':    s['tune_id'],
             'meter':      s['meter'],
             'mode':       s['mode'],
-            'abc':        s['abc_body'],
+            'abc':        s['abc_display'],
             'dance':      s['dance'],
             'origin':     s['origin'],
             'composer':   s['composer'],
