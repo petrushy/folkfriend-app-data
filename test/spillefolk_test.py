@@ -26,6 +26,7 @@ import py_midicsv  # noqa: E402  (real, not stubbed: the MIDI tests need it)
 dl = load('download_spillefolk_data', BUILD_SRC / 'download_spillefolk_data.py')
 sm = load('spillefolk_midi', BUILD_SRC / 'spillefolk_midi.py')
 build = load('build_spillefolk_data', BUILD_SRC / 'build_spillefolk_data.py')
+sx = load('spillefolk_xml', BUILD_SRC / 'spillefolk_xml.py')
 
 
 LIST_PAGE = """<h1> Biografier </h1><a href=visnode.php?key=bi-bast title="x"  target="_blank"  ><font size=1>Brødrene Bast
@@ -75,6 +76,89 @@ class AbcTest(unittest.TestCase):
     def test_bogus_meters_fall_back_by_dance(self):
         self.assertEqual(sm.METER_BY_DANCE['va'], '3/4')
         self.assertEqual(sm.METER_BY_DANCE['pk'], '2/4')
+
+
+# Real xml2abc output shape: header, a voice declaration, then each voice's
+# music opened by a bare V: line; `$` marks the score's own line breaks and
+# `%n` counts bars.
+XML2ABC_OUTPUT = """X:1
+T:Anglais e. Jonas
+L:1/8
+M:2/4
+I:linebreak $
+K:G
+V:1 treble nm="Violin" snm="Vl."
+V:2 treble nm="Andenstemme"
+V:1
+"G" D(G{/A)} GF |"C" E3 (D | E)F G(B |1"D" A2 (AB) :|2"D" A2 (Ad) | %5
+$"G" (GA) (Bc) | d2 (BG) |] %7
+w: la la la
+V:2
+B,2 B,2 | C4 |]
+"""
+
+
+class MusicXmlDownloadTest(unittest.TestCase):
+    """xml/<key>.xml is not always plain MusicXML (October 2026)."""
+
+    SCORE = (b'<?xml version="1.0"?>\n<!DOCTYPE score-partwise>\n'
+             b'<score-partwise version="3.1"></score-partwise>')
+
+    def zipped(self, name, data):
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as z:
+            z.writestr('META-INF/container.xml', '<container/>')
+            z.writestr(name, data)
+        return buf.getvalue()
+
+    def test_plain_musicxml_is_stored_as_is(self):
+        self.assertEqual(dl.unpack_musicxml(self.SCORE), self.SCORE)
+
+    def test_compressed_musicxml_is_unpacked(self):
+        # po-ensuptill: an .mxl (zip) served under the .xml name.
+        self.assertEqual(
+            dl.unpack_musicxml(self.zipped('po-ensuptill.xml', self.SCORE)),
+            self.SCORE)
+
+    def test_a_zipped_musescore_file_is_not_musicxml(self):
+        # tu-oxekowvendsyssel: a zipped .mscx, left to the MIDI fallback.
+        self.assertIsNone(dl.unpack_musicxml(
+            self.zipped('tu-oxekowlirum.mscx', b'<museScore version="3.02"/>')))
+        self.assertIsNone(dl.unpack_musicxml(b'<html>Not found</html>'))
+
+
+class MusicXmlTest(unittest.TestCase):
+    def setUp(self):
+        self._run = sx.run_xml2abc
+        sx.run_xml2abc = lambda path: XML2ABC_OUTPUT
+
+    def tearDown(self):
+        sx.run_xml2abc = self._run
+
+    def test_header_fields_survive_a_voice_declaration(self):
+        result = sx.abc('ignored.xml')
+        self.assertEqual((result['meter'], result['note_len'], result['key'],
+                          result['mode']), ('2/4', '1/8', 'G', 'Gmajor'))
+
+    def test_first_voice_only_with_score_line_breaks(self):
+        body = sx.abc('ignored.xml')['body']
+        self.assertNotIn('B,2', body)          # the second voice
+        self.assertNotIn('la la', body)        # lyrics
+        self.assertNotIn('%', body)            # bar-count comments
+        lines = body.split('\n')
+        self.assertEqual(len(lines), 2)        # one per `$`-marked line
+        self.assertTrue(lines[1].startswith('"G" (GA)'))
+
+    def test_repeats_endings_and_upbeats_are_kept_verbatim(self):
+        body = sx.abc('ignored.xml')['body']
+        self.assertIn('|1"D" A2 (AB) :|2', body)
+        self.assertTrue(body.startswith('"G" D(G{/A)} GF |'))
+
+    def test_no_key_means_no_notation(self):
+        sx.run_xml2abc = lambda path: 'X:1\nT:broken\n'
+        self.assertIsNone(sx.abc('ignored.xml'))
 
 
 class MidiContourTest(unittest.TestCase):

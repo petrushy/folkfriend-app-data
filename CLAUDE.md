@@ -105,6 +105,7 @@ build/
   requirements.txt
   abc2midi                  # Required binary (NOT in git — symlink it yourself; MUST be 5.02, see below)
   midi2abc                  # Only for spillefolk (NOT in git) — abcmidi's, built from the same source
+  xml2abc.py                # Only for spillefolk (NOT in git) — Wim Vree's, see "Spillefolk"
   data/                     # Generated at build time (NOT in git)
     tunes.json / aliases.json         # thesession, from GitHub
     midis/                            # cached per-setting .midi, keyed on setting_id
@@ -127,7 +128,8 @@ build/
     discover_norbeck_refs.py     # Scrapes valid display.asp (rhythm, ref) pairs
     build_norbeck_data.py        # → data/norbeck.json
     download_spillefolk_data.py  # Catalogue + MIDI from spillefolk.dk (private dataset)
-    spillefolk_midi.py           # MIDI → melody contour, and → display ABC via midi2abc
+    spillefolk_xml.py            # MusicXML → display ABC via xml2abc (preferred notation)
+    spillefolk_midi.py           # MIDI → melody contour, and → display ABC via midi2abc (fallback)
     build_spillefolk_data.py     # → data/spillefolk.json   (NOT published)
     assemble_datasets.py         # → datasets.json + legacy bundle + nud-meta.json
     validate_output.py           # Per-dataset checks + cross-dataset ID disjointness
@@ -455,7 +457,7 @@ living composers; it does not grant republishing the collection.
 
 ```sh
 cd build && . env.sh
-python src/download_spillefolk_data.py .   # ~1 h the first time; resumable
+python src/download_spillefolk_data.py .   # ~2 h the first time (MIDI + MusicXML); resumable
 python src/build_spillefolk_data.py .      # → data/spillefolk.json, stamped, importable
 ```
 
@@ -471,10 +473,24 @@ Things that were not obvious:
   (`searchTxt.php`) answers nothing outside a browser session. The site
   returns **HTTP 404 for PHP pages that render normally**, so content is
   checked, not status.
-- **MIDI is the one format every tune has.** About a quarter also have
-  MusicXML/`.mscz` (`xml/<key>.xml`, `mscz/<key>.mscz`, not linked from the
-  page). The contour comes straight from the MIDI's melody track; display ABC
-  from `midi2abc`.
+- **Notation comes from MusicXML wherever the site has it** (`xml/<key>.xml`,
+  not linked from the tune page; about a quarter of the tunes, the ones
+  entered in MuseScore). `xml2abc.py` reproduces the score exactly — repeats,
+  first/second endings, upbeats, bar lines, chord symbols, the original line
+  breaks. The first try used MIDI for every score, and they looked bad: MIDI
+  carries notes, not notation.
+- **Result (October 2026): 3,288 tunes, 1,198 with MusicXML notation** (36%),
+  2,090 with the MIDI fallback, 0 empty contours. A few `xml/<key>.xml` files
+  are really compressed MusicXML (`.mxl`, a zip) and are unpacked; one is a
+  zipped MuseScore `.mscx` and is recorded as unsupported.
+- **MIDI is the one format every tune has**, so it is the contour source for
+  all of them, and the notation fallback (`midi2abc`) for tunes with no
+  MusicXML.
+- **Tools, not in git:** `xml2abc.py` from https://wim.vree.org/svgParse/xml2abc.html
+  (version 177, LGPL — it runs only in this build), unpacked to
+  `build/data/tools/` and linked as `build/xml2abc.py`. `midi2abc` is built
+  from the same abcmidi commit as `abc2midi` (`make midi2abc`) and linked as
+  `build/midi2abc`.
 - **The melody is the first track with notes.** Files carry second voices and
   chord tracks; double stops keep the top note; a note-on with velocity 0 is a
   note-off (midi.py's reader alone would leave those notes hanging).
@@ -484,11 +500,11 @@ Things that were not obvious:
   carry a time signature with numerator 1 (1/4, 1/8, 1/16), drawn as one-beat
   bars; those get their dance's usual meter via `-m`. Leading rest bars are
   dropped and chords reduced to the top note.
-- **Known limitation: upbeats.** midi2abc counts bars from time zero and the
-  MIDI does not mark the first downbeat, so a tune with a pickup can have its
-  bar lines shifted, with ties across them. The notes and the contour are
-  right; only the drawn barring is off. The tune's source link opens the
-  original score. Using the MusicXML where it exists would fix that quarter.
+- **Known limitation, MIDI-only tunes:** no repeat signs or endings (MIDI
+  has none — repeats are played out), and midi2abc counts bars from time zero
+  without knowing where the first downbeat is, so a tune with an upbeat can
+  have shifted bar lines. The notes and the contour are right; the tune's
+  source link opens the original score.
 - **Overlap with folkwiki**, measured melodically (October 2026): 54% of the
   780 Swedish tunes are already in folkwiki, 41% are new, 5% uncertain. Most of
   the new value is the Danish material.

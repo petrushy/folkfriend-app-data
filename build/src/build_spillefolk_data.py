@@ -6,8 +6,11 @@ built for personal import only, like Norbeck.
 
 Each tune becomes one setting of its own tune:
 - contour: straight from the MIDI's melody track (spillefolk_midi.contour);
-- abc:     midi2abc's rendering of the same track, with its own L: on top
-           (the app assumes L:1/8 otherwise — see abc_for_display);
+           from the notation via abc2midi only when there is no MIDI;
+- abc:     the score's MusicXML through xml2abc when the site has it (about a
+           quarter: exact repeats, endings, upbeats, bar lines); otherwise
+           midi2abc's rendering of the MIDI, which cannot carry those. Either
+           way with its own L: on top (the app assumes L:1/8 otherwise);
 - meter / mode: from that rendering (mode named from the tune's last note);
 - dance:   from the heading the site files the tune under;
 - origin:  the site's regions and country;
@@ -31,10 +34,11 @@ import pathlib
 import re
 import sys
 
-from abc_common import titles_to_aliases
+from abc_common import contour_for_setting, titles_to_aliases
 from tqdm.contrib.concurrent import process_map
 
 import spillefolk_midi
+import spillefolk_xml
 
 logging.basicConfig(level=logging.INFO, format='[%(name)s] %(message)s')
 log = logging.getLogger(os.path.basename(__file__))
@@ -95,16 +99,29 @@ def origin_for(entry):
 
 
 def convert(args):
-    """process_map worker: (key, path) -> (key, result | error string)."""
-    key, path = args
+    """process_map worker: (key, midi path | None, xml path | None, midis dir)
+    -> (key, result | error string)."""
+    key, midi, xml, midis_dir = args
     try:
-        rendered = spillefolk_midi.abc(path, key.split('-')[0])
-        contour = spillefolk_midi.contour(path)
+        rendered, notation = None, None
+        if xml:
+            rendered, notation = spillefolk_xml.abc(xml), 'musicxml'
+        if not rendered and midi:
+            rendered = spillefolk_midi.abc(midi, key.split('-')[0])
+            notation = 'midi'
+        if not rendered:
+            return key, 'no usable notation'
+        contour = spillefolk_midi.contour(midi) if midi else ''
+        if not contour:
+            # No MIDI, or one with no notes in it (sc-sulhusgubben): make the
+            # contour from the notation, as the other datasets do.
+            contour = contour_for_setting(
+                abc_body=rendered['body'], meter=rendered['meter'],
+                mode=rendered['mode'], note_len=rendered['note_len'],
+                midi_out_path=os.path.join(midis_dir, f'sf_{key}.midi'))
     except Exception as e:  # one malformed file must not stop the build
         return key, f'{type(e).__name__}: {e}'
-    if not rendered:
-        return key, 'midi2abc produced no music'
-    return key, {**rendered, 'contour': contour}
+    return key, {**rendered, 'contour': contour, 'notation': notation}
 
 
 def build(parent_dir):
@@ -114,25 +131,34 @@ def build(parent_dir):
     if not catalogue_path.exists():
         sys.exit('No data/spillefolk/catalogue.json — run '
                  'download_spillefolk_data.py first.')
-    if not os.path.exists('./midi2abc'):
-        sys.exit('Missing ./midi2abc (abcmidi). See CLAUDE.md.')
+    for tool in ('./midi2abc', './xml2abc.py'):
+        if not os.path.exists(tool):
+            sys.exit(f'Missing {tool}. See "Spillefolk" in CLAUDE.md.')
     catalogue = json.loads(catalogue_path.read_text(encoding='utf-8'))
 
-    jobs = [(k, str(src / 'mid' / f'{k}.mid')) for k in sorted(catalogue)
-            if (src / 'mid' / f'{k}.mid').exists()]
+    midis_dir = src / 'midis'
+    midis_dir.mkdir(exist_ok=True)
+    jobs = []
+    for k in sorted(catalogue):
+        midi, xml = src / 'mid' / f'{k}.mid', src / 'xml' / f'{k}.xml'
+        if midi.exists() or xml.exists():
+            jobs.append((k, str(midi) if midi.exists() else None,
+                         str(xml) if xml.exists() else None, str(midis_dir)))
     missing = len(catalogue) - len(jobs)
-    log.info(f'{len(jobs)} tunes with MIDI ({missing} without — re-run the '
-             'download to fetch them)')
+    log.info(f'{len(jobs)} tunes with MIDI or MusicXML ({missing} with '
+             'neither)')
 
     results = process_map(convert, jobs, chunksize=8,
                           desc='Converting spillefolk MIDI')
 
     settings, aliases, failed = {}, {}, []
+    by_notation = {'musicxml': 0, 'midi': 0}
     for key, result in results:
         if isinstance(result, str):
             failed.append((key, result))
             continue
         entry = catalogue[key]
+        by_notation[result['notation']] += 1
         tune_id = stable_id(key, SPILLEFOLK_TUNE_ID_BASE)
         setting_id = stable_id(key, SPILLEFOLK_SETTING_ID_BASE,
                                SETTING_MULTIPLIER)
@@ -151,8 +177,9 @@ def build(parent_dir):
         aliases[tune_id] = titles_to_aliases(titles_for(entry))
 
     empty = sum(1 for s in settings.values() if not s['contour'])
-    log.info(f'{len(settings)} settings; {empty} empty contours; '
-             f'{len(failed)} failed: {failed[:10]}')
+    log.info(f'{len(settings)} settings; notation from MusicXML '
+             f'{by_notation["musicxml"]}, from MIDI {by_notation["midi"]}; '
+             f'{empty} empty contours; {len(failed)} failed: {failed[:10]}')
 
     today = datetime.date.today()
     payload = {
