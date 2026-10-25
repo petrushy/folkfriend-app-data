@@ -31,6 +31,7 @@ import re
 import urllib.parse
 
 from abc_common import (
+    abc_for_display,
     contour_for_setting,
     decode_abc_escapes,
     parse_abc_tune,
@@ -441,6 +442,8 @@ def build_norbeck_data(parent_dir):
                 # standard default. 45% of the collection relies on this.
                 'note_len': note_len,
                 'abc_body': stored,
+                # The L: the app needs to draw and play it at the right length.
+                'abc_display': abc_for_display({**parsed, 'abc_body': stored}),
                 'contour_body': section_body,
                 'dance': decode_abc_escapes(parsed['dance']),
                 'origin': decode_abc_escapes(origin),
@@ -497,7 +500,7 @@ def build_norbeck_data(parent_dir):
             'tune_id':    s['tune_id'],
             'meter':      s['meter'],
             'mode':       s['mode'],
-            'abc':        s['abc_body'],
+            'abc':        s['abc_display'],
             'dance':      s['dance'],
             'origin':     s['origin'],
             'composer':   s['composer'],
