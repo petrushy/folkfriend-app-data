@@ -254,20 +254,8 @@ class FolkwikiPipelineTest(unittest.TestCase):
                 '{"v": 1, "date": "2026-04-17"}',
                 encoding='utf-8',
             )
-            (folkwiki_dir / 'manifest.json').write_text(
-                '{"abc123": {"name": "test tune", "url": "http://example.com/test.abc"}}',
-                encoding='utf-8',
-            )
-            (folkwiki_dir / 'hexhash_to_pageid.json').write_text(
-                '{"abc123": 1}',
-                encoding='utf-8',
-            )
-            (folkwiki_dir / 'abc123.abc').write_text('X:1\nT:test\nK:G\nABcd\n', encoding='utf-8')
-
             rc = self.validate_output.validate(
                 str(tmp_path),
-                manifest_path=str(folkwiki_dir / 'manifest.json'),
-                pageid_path=str(folkwiki_dir / 'hexhash_to_pageid.json'),
                 allow_missing_output=True,
             )
             self.assertEqual(rc, 1)

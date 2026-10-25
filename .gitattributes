@@ -1,0 +1,5 @@
+# Archives are binary. Declared before the first one is committed: a text
+# filter applied to a .tar.gz corrupts it silently, and `git status` cannot
+# show it (see the WAV incident in the app repo's CLAUDE.md).
+*.tar.gz binary
+*.gz binary

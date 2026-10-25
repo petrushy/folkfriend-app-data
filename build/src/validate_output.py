@@ -13,7 +13,6 @@ matters (no ID appears in two datasets) is done explicitly.
 """
 
 import argparse
-import glob
 import json
 import logging
 import os
@@ -57,7 +56,9 @@ LEGACY_MERGED_IDS = ('thesession', 'folkwiki')
 MIN_LEGACY_SETTINGS = 55_000
 MIN_LEGACY_ALIASES = 25_000
 
-MIN_FOLKWIKI_PAGEID_COVERAGE_PCT = 65.0
+# The Musik group listed 6,625 pages in October 2026 and only grows; a
+# snapshot far below that was cut short, whatever its own report says.
+MIN_FOLKWIKI_SNAPSHOT_PAGES = 6_000
 
 REQUIRED_FIELDS = {
     'tune_id', 'meter', 'mode', 'abc', 'dance', 'contour', 'origin'
@@ -277,39 +278,41 @@ def validate_legacy_bundle(data_dir, loaded, errors):
         errors.append(f'nud-meta.json not found at {meta_path}')
 
 
-def validate_folkwiki_cache(folkwiki_dir, manifest_path, pageid_path, errors):
-    if not manifest_path:
+def validate_folkwiki_snapshot(snapshot_dir, errors):
+    """The snapshot folkwiki.json was built from must be complete: every page
+    accounted for and every cache file it names present. A page that failed
+    to download is a tune silently missing from the index."""
+    if not snapshot_dir:
         return
-    if not os.path.exists(manifest_path):
-        errors.append(f'Folkwiki manifest not found at {manifest_path}')
+    index_path = os.path.join(snapshot_dir, 'index.json')
+    if not os.path.exists(index_path):
+        errors.append(f'Folkwiki snapshot index not found at {index_path}')
         return
 
-    log.info('--- folkwiki cache')
-    with open(manifest_path, encoding='utf-8') as f:
-        manifest = json.load(f)
-    abc_files = glob.glob(os.path.join(folkwiki_dir, '*.abc'))
-    log.info(f'  manifest entries: {len(manifest)}  abc files: {len(abc_files)}')
-    if len(abc_files) < len(manifest):
+    log.info(f'--- folkwiki snapshot {snapshot_dir}')
+    with open(index_path, encoding='utf-8') as f:
+        index = json.load(f)
+    statuses = {}
+    for entry in index.values():
+        statuses[entry.get('status')] = statuses.get(entry.get('status'), 0) + 1
+    log.info(f'  pages: {len(index)}  {statuses}')
+    if len(index) < MIN_FOLKWIKI_SNAPSHOT_PAGES:
         errors.append(
-            f'Folkwiki file cache incomplete: {len(abc_files)} .abc files for '
-            f'{len(manifest)} manifest entries.'
-        )
-
-    if pageid_path and os.path.exists(pageid_path) and manifest:
-        with open(pageid_path, encoding='utf-8') as f:
-            pageids = json.load(f)
-        pct = 100 * len(pageids) / len(manifest)
-        log.info(f'  page-id coverage: {len(pageids)}/{len(manifest)} ({pct:.2f}%)')
-        if pct < MIN_FOLKWIKI_PAGEID_COVERAGE_PCT:
-            errors.append(
-                f'Folkwiki page-id coverage too low: {pct:.1f}% < '
-                f'{MIN_FOLKWIKI_PAGEID_COVERAGE_PCT}%.')
-        stale = set(pageids) - set(manifest)
-        if stale:
-            log.warning(
-                f'{len(stale)} page-id hashes are missing from the manifest. '
-                'Treated as a warning: the crawl retains small numbers of '
-                'stale entries.')
+            f'Folkwiki snapshot has only {len(index)} pages '
+            f'(< {MIN_FOLKWIKI_SNAPSHOT_PAGES}); it looks truncated.')
+    unverified = [p for p, e in index.items()
+                  if e.get('status') not in ('ok', 'absent', 'blank')]
+    if unverified:
+        errors.append(
+            f'Folkwiki snapshot has {len(unverified)} unverified pages, '
+            f'e.g. {unverified[:5]}')
+    missing = [l['file'] for e in index.values() for l in e.get('abc', [])
+               if not os.path.exists(
+                   os.path.join(snapshot_dir, 'cache', l.get('file', '')))]
+    if missing:
+        errors.append(
+            f'Folkwiki snapshot is missing {len(missing)} cache files, '
+            f'e.g. {missing[:5]}')
 
 
 def check_unpublished_absent(out_dir, errors):
@@ -322,10 +325,9 @@ def check_unpublished_absent(out_dir, errors):
                 'serve it; it is imported by hand in the app.')
 
 
-def validate(parent_dir, manifest_path=None, pageid_path=None,
+def validate(parent_dir, folkwiki_snapshot=None,
              allow_missing_output=False, only_dataset=None):
     data_dir = os.path.join(parent_dir, 'data')
-    folkwiki_dir = os.path.join(data_dir, 'folkwiki')
     errors = []
     loaded = {}
 
@@ -350,8 +352,7 @@ def validate(parent_dir, manifest_path=None, pageid_path=None,
             sys.exit(1)
 
     if only_dataset == 'folkwiki' or not only_dataset:
-        validate_folkwiki_cache(
-            folkwiki_dir, manifest_path, pageid_path, errors)
+        validate_folkwiki_snapshot(folkwiki_snapshot, errors)
 
     if not only_dataset:
         if len(loaded) > 1:
@@ -384,8 +385,10 @@ if __name__ == '__main__':
     parser.add_argument(
         'dir', help='Parent directory for the `data` directory'
     )
-    parser.add_argument('--manifest-path')
-    parser.add_argument('--pageid-path')
+    parser.add_argument(
+        '--folkwiki-snapshot',
+        help='Snapshot directory folkwiki.json was built from; checked for '
+             'completeness')
     parser.add_argument(
         '--dataset', choices=sorted(DATASETS),
         help='Validate only this dataset, skipping the cross-file and legacy '
@@ -399,8 +402,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     sys.exit(validate(
         args.dir,
-        manifest_path=args.manifest_path,
-        pageid_path=args.pageid_path,
+        folkwiki_snapshot=args.folkwiki_snapshot,
         allow_missing_output=args.allow_missing_output,
         only_dataset=args.dataset,
     ))
