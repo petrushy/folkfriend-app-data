@@ -23,8 +23,10 @@ Important paths:
 
 - `build/build.sh`
 - `build/src/download_thesession_data.py`
+- `build/src/archive_folkwiki.py`
 - `build/src/download_folkwiki_data.py`
 - `build/src/build_folkwiki_data.py`
+- `archive/folkwiki/<date>.tar.gz`
 - `build/src/build_non_user_data.py`
 - `build/src/midi.py`
 - `public/folkfriend-non-user-data.json`
@@ -62,7 +64,7 @@ Stored locally as:
 ```mermaid
 flowchart TD
     A[build/build.sh] --> B[download_thesession_data.py]
-    A --> C[download_folkwiki_data.py]
+    A --> C[download_folkwiki_data.py<br/>unpacks archive/folkwiki]
     A --> D[build_folkwiki_data.py]
     A --> E[build_non_user_data.py]
     E --> F[build/data/folkfriend-non-user-data.json]
@@ -84,16 +86,17 @@ Outputs:
 - `build/data/tunes.json`
 - `build/data/aliases.json`
 
-### Stage 2: Download Folkwiki
+### Stage 2: Folkwiki input
 
 Script:
 
-- `build/src/download_folkwiki_data.py`
+- `build/src/download_folkwiki_data.py` — unpacks the newest committed
+  snapshot; no network. Snapshots are taken separately by
+  `build/src/archive_folkwiki.py` (see CLAUDE.md, "Folkwiki snapshot").
 
 Outputs:
 
-- `build/data/folkwiki/manifest.json`
-- `build/data/folkwiki/*.abc`
+- `build/data/folkwiki-snapshots/<date>/` — `pages/`, `cache/`, `index.json`
 
 Notes:
 

@@ -72,21 +72,25 @@ commit_hashes () {
 
 echo "==> Fetching sources"
 python src/download_thesession_data.py $SCRIPTPATH
-python src/download_folkwiki_data.py $SCRIPTPATH --offline
+# Folkwiki is not fetched here: its input is the newest snapshot committed under
+# archive/folkwiki/ (taken by regenerate_dataset.sh / archive_folkwiki.py).
+# This only unpacks it, so a routine build never touches the slow, flaky site.
+python src/download_folkwiki_data.py $SCRIPTPATH
 python src/download_norbeck_data.py $SCRIPTPATH
 
 echo "==> Checking for changes"
 check_changed thesession data/tunes.json data/aliases.json
-check_changed folkwiki data/folkwiki/manifest.json
+check_changed folkwiki ../archive/folkwiki/*.tar.gz
 check_changed norbeck data/norbeck/manifest.json
 
-# The folkwiki validator doubles as a maintenance signal: if source_url or
-# page-id coverage has decayed, rebuild folkwiki even when its manifest is
+# The folkwiki validator doubles as a maintenance signal: if the existing output
+# or its snapshot fails validation, rebuild folkwiki even when the archive is
 # unchanged.
+FOLKWIKI_SNAPSHOT=$(python -c "import sys; sys.path.insert(0, 'src');
+from build_folkwiki_data import latest_snapshot; print(latest_snapshot('.'))")
 if ! python src/validate_output.py $SCRIPTPATH \
         --dataset folkwiki \
-        --manifest-path data/folkwiki/manifest.json \
-        --pageid-path data/folkwiki/hexhash_to_pageid.json \
+        --folkwiki-snapshot "$FOLKWIKI_SNAPSHOT" \
         --allow-missing-output
 then
     echo "Existing folkwiki output needs maintenance; rebuilding it."
@@ -139,8 +143,7 @@ python src/assemble_datasets.py $SCRIPTPATH "${VERSION_ARGS[@]}"
 
 echo "==> Validating output"
 python src/validate_output.py $SCRIPTPATH \
-    --manifest-path data/folkwiki/manifest.json \
-    --pageid-path data/folkwiki/hexhash_to_pageid.json
+    --folkwiki-snapshot "$FOLKWIKI_SNAPSHOT"
 
 # ONLY what assemble_datasets declared publishable. Norbeck is built but never
 # served — see the note in assemble_datasets.py — and reading the list from the

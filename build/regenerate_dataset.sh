@@ -6,22 +6,12 @@ SCRIPTPATH="$(dirname "$SCRIPT")"
 cd "$SCRIPTPATH"
 
 DEPLOY=0
-SKIP_PAGEIDS=0
-SKIP_FILL_MISSING=0
 SKIP_NORBECK_REFS=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --deploy)
             DEPLOY=1
-            shift
-            ;;
-        --skip-pageids)
-            SKIP_PAGEIDS=1
-            shift
-            ;;
-        --skip-fill-missing)
-            SKIP_FILL_MISSING=1
             shift
             ;;
         --skip-norbeck-refs)
@@ -34,19 +24,16 @@ Usage: bash build/regenerate_dataset.sh [options]
 
 Refreshes every dataset from upstream sources, ignoring change detection:
   1. Downloads TheSession data
-  2. Downloads live Folkwiki ABC files
-  3. Rebuilds Folkwiki page-id mappings
-  4. Fills missing Folkwiki entries missed by CDX
-  5. Downloads Norbeck's ABC collection
-  6. Refreshes Norbeck's display.asp (rhythm, ref) index
-  7. Rebuilds all three dataset files
-  8. Assembles datasets.json and the legacy merged bundle
-  9. Validates everything
+  2. Takes a verified snapshot of folkwiki.se and packs it into
+     archive/folkwiki/<date>.tar.gz (commit that file)
+  3. Downloads Norbeck's ABC collection
+  4. Refreshes Norbeck's display.asp (rhythm, ref) index
+  5. Rebuilds all three dataset files
+  6. Assembles datasets.json and the legacy merged bundle
+  7. Validates everything
 
 Options:
   --deploy             Copy outputs to public/ and run firebase deploy --only hosting
-  --skip-pageids       Skip discover_folkwiki_pageids.py
-  --skip-fill-missing  Skip fill_missing_folkwiki.py
   --skip-norbeck-refs  Skip discover_norbeck_refs.py
   -h, --help           Show this help text
 EOF
@@ -69,22 +56,10 @@ fi
 echo "==> Downloading TheSession data"
 python src/download_thesession_data.py .
 
-echo "==> Downloading live Folkwiki data"
-python src/download_folkwiki_data.py .
-
-if [[ "$SKIP_PAGEIDS" -eq 0 ]]; then
-    echo "==> Refreshing Folkwiki page-id mapping"
-    python src/discover_folkwiki_pageids.py .
-else
-    echo "==> Skipping Folkwiki page-id mapping refresh"
-fi
-
-if [[ "$SKIP_FILL_MISSING" -eq 0 ]]; then
-    echo "==> Filling missing Folkwiki entries"
-    python src/fill_missing_folkwiki.py .
-else
-    echo "==> Skipping fill_missing_folkwiki.py"
-fi
+echo "==> Taking a folkwiki snapshot (about two hours; resumable)"
+# Fails, and packs nothing, unless every page was verified. Re-running on the
+# same day resumes and retries only what is still unverified.
+python src/archive_folkwiki.py .
 
 echo "==> Downloading Norbeck collection"
 python src/download_norbeck_data.py .
@@ -113,8 +88,8 @@ python src/assemble_datasets.py .
 
 echo "==> Validating output"
 python src/validate_output.py . \
-    --manifest-path data/folkwiki/manifest.json \
-    --pageid-path data/folkwiki/hexhash_to_pageid.json
+    --folkwiki-snapshot "$(python -c "import sys; sys.path.insert(0, 'src');
+from build_folkwiki_data import latest_snapshot; print(latest_snapshot('.'))")"
 
 if [[ "$DEPLOY" -eq 1 ]]; then
     echo "==> Copying outputs to public/"
