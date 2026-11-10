@@ -87,6 +87,33 @@ inserted — user favourites reference them. `assemble_datasets.py`,
 nothing: one setting silently shadows the other and the tune stops being
 findable.
 
+### Set partners in thesession.json (November 2026)
+
+`thesession.json` carries a top-level **`sets`** map — which tunes are played
+together, for the app's "Played in sets with" list. Built by
+`src/thesession_sets.py` from TheSession-data's `sets.json` (member tune sets)
+and `recordings.json` (recording tracks):
+
+    "sets": { "<tune_id>": [[partner_id, in_sets, on_recordings, followed_by], ...] }
+
+Top 12 per tune by `in_sets + on_recordings`, ties by id; both sides restricted
+to tunes in the file. ~16,000 tunes, +2 MB. Lists longer than 12 tunes are not
+counted as sets (`MAX_SET_SIZE`; some "sets" are 130-tune favourites lists).
+For Farewell To Whalley Range the top five match thesession.org's own list.
+
+- **`sets.json` is in Git LFS** (~150 MB): the raw URL returns a 134-byte
+  pointer. `download_thesession_data.py` falls back to
+  media.githubusercontent.com and writes via a temp file.
+- Both files are thesession inputs in `build.sh`'s change detection.
+- Missing `sets.json` is non-fatal (the index is complete without it);
+  `validate_output.py` warns, and fails on malformed entries or coverage under
+  5,000 tunes.
+- To add partners to an existing file without regenerating contours:
+  `python src/thesession_sets.py . --into data/thesession.json`. v2505 was
+  published that way (tune data still the 2026-10-25 export).
+- The legacy merged bundle never contains `sets`.
+- Tests: `test/thesession_sets_test.py`.
+
 ## Key concept: MIDI contour
 
 Each tune setting's ABC notation is converted to a **contour string** — a sequence of ASCII letters representing relative MIDI pitch, quantised to quavers (eighth notes). This is the representation the Rust/WASM query engine actually searches against.

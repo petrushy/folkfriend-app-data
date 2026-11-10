@@ -79,7 +79,8 @@ python src/download_folkwiki_data.py $SCRIPTPATH
 python src/download_norbeck_data.py $SCRIPTPATH
 
 echo "==> Checking for changes"
-check_changed thesession data/tunes.json data/aliases.json
+check_changed thesession data/tunes.json data/aliases.json \
+    data/sets.json data/recordings.json
 check_changed folkwiki ../archive/folkwiki/*.tar.gz
 check_changed norbeck data/norbeck/manifest.json
 

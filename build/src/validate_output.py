@@ -137,7 +137,44 @@ def validate_dataset(ds_id, path, errors):
         errors.append(
             f'{ds_id}: {orphans} settings reference a tune_id with no aliases.')
 
+    if ds_id == 'thesession':
+        validate_set_partners(payload, errors)
+
     return payload
+
+
+def validate_set_partners(payload, errors):
+    """thesession's `sets`: which tunes are played together.
+
+    Absent is a warning, not an error — the index is complete without it and
+    the app then just offers no suggestions. Present, it must be well formed
+    and point only at tunes in the file, since every entry is something the
+    app will offer to open.
+    """
+    sets = payload.get('sets')
+    if sets is None:
+        log.warning('  thesession has no "sets": no set partners will be offered')
+        return
+    aliases = payload.get('aliases') or {}
+    bad = 0
+    for tune, partners in sets.items():
+        if tune not in aliases or not isinstance(partners, list):
+            bad += 1
+            continue
+        for entry in partners:
+            if (not isinstance(entry, list) or len(entry) != 4
+                    or entry[0] not in aliases or entry[0] == tune
+                    or not all(isinstance(n, int) and n >= 0
+                               for n in entry[1:])):
+                bad += 1
+                break
+    log.info(f'  set partners: {len(sets)} tunes ({bad} malformed)')
+    if bad:
+        errors.append(f'thesession: {bad} malformed set-partner entries.')
+    if len(sets) < 5_000:
+        errors.append(
+            f'thesession: set partners for only {len(sets)} tunes (expected '
+            '~12,000); the sets.json download is probably incomplete.')
 
 
 def check_disjoint_ids(loaded, errors):

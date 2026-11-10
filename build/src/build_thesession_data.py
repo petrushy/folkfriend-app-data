@@ -14,6 +14,7 @@ import os
 import pathlib
 
 from abc_common import contour_for_setting, gather_aliases
+from thesession_sets import attach_set_partners
 
 from tqdm.contrib.concurrent import process_map
 
@@ -106,6 +107,11 @@ def build_thesession_data(parent_dir):
         'settings': settings,
         'aliases': gathered_aliases,
     }
+
+    # Which tunes are played together (thesession member sets + recording
+    # tracks). Kept out of `settings` because it is per TUNE; the app strips
+    # it before the index reaches WASM.
+    attach_set_partners(output, data_dir)
 
     log.info(f'Writing {output_path}')
     with open(output_path, 'w') as f:
