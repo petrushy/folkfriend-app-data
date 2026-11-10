@@ -59,6 +59,13 @@ class SetPartnersTest(unittest.TestCase):
         out = ts.build_set_partners(set_rows(list(range(1, 20))), [], KNOWN)
         self.assertEqual(out, {})
 
+    def test_eight_tunes_is_a_set_nine_is_not(self):
+        self.assertIn('1', ts.build_set_partners(set_rows(list(range(1, 9))), [], KNOWN))
+        self.assertEqual(ts.build_set_partners(set_rows(list(range(1, 10))), [], KNOWN), {})
+        self.assertEqual(
+            ts.build_set_partners([], track_rows(list(range(1, 10))), KNOWN), {},
+            'the same limit applies to recording tracks')
+
     def test_ranked_capped_and_deterministic(self):
         sets = [[1, p] for p in range(2, 30)] + [[1, 7]] * 3
         out = ts.build_set_partners(set_rows(*sets), [], KNOWN, max_partners=5)

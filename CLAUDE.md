@@ -97,9 +97,12 @@ and `recordings.json` (recording tracks):
     "sets": { "<tune_id>": [[partner_id, in_sets, on_recordings, followed_by], ...] }
 
 Top 12 per tune by `in_sets + on_recordings`, ties by id; both sides restricted
-to tunes in the file. ~16,000 tunes, +2 MB. Lists longer than 12 tunes are not
-counted as sets (`MAX_SET_SIZE`; some "sets" are 130-tune favourites lists).
-For Farewell To Whalley Range the top five match thesession.org's own list.
+to tunes in the file. ~16,000 tunes, +2 MB. Lists longer than 8 tunes are not
+counted as sets (`MAX_SET_SIZE`; a set as played is 3–6 tunes, while some saved
+"sets" are 130-tune favourites lists).
+For Farewell To Whalley Range the top four match thesession.org's own list in
+order; the site's fifth comes seventh here, because the site also counts the
+over-long lists.
 
 - **`sets.json` is in Git LFS** (~150 MB): the raw URL returns a 134-byte
   pointer. `download_thesession_data.py` falls back to

@@ -7,8 +7,9 @@ sets too. Both are in the TheSession-data export (`sets.json`,
 often played with, which the app shows as "Played in sets with…" — the same
 list thesession.org shows on a tune's page ("This tune gets played in sets
 together with…"). Measured against that page for Farewell To Whalley Range
-(tune 2410), the top five and their order agree (the counts are slightly
-lower, because lists too long to be a set are left out — see MAX_SET_SIZE).
+(tune 2410), the top four agree in order. The site's fifth, Elizabeth
+Kelly's Delight, comes seventh here: the site also counts saved lists longer
+than a real set, which this leaves out (see MAX_SET_SIZE).
 
 Output, embedded as a top-level key of thesession.json:
 
@@ -44,11 +45,11 @@ log = logging.getLogger(os.path.basename(__file__))
 
 MAX_PARTNERS = 12
 
-# A "set" with more tunes than this is a "my favourite reels" list, not a set
-# as played (some run to 130 tunes). Counting every pair in a 40-tune list
-# adds 780 pairs, mostly of tunes nobody plays together. 730 of 132k sets are
-# over the limit; with it, Whalley Range's top five still match the site's.
-MAX_SET_SIZE = 12
+# A set as played is normally three to six tunes, never more than eight. A
+# saved "set" longer than that is a "my favourite reels" list (some run to 130
+# tunes), and counting every pair in a 40-tune list adds 780 pairs, mostly of
+# tunes nobody plays together. Such lists are left out entirely.
+MAX_SET_SIZE = 8
 
 
 def _groups_from_sets(rows):
