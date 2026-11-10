@@ -112,8 +112,8 @@ over-long lists.
   `validate_output.py` warns, and fails on malformed entries or coverage under
   5,000 tunes.
 - To add partners to an existing file without regenerating contours:
-  `python src/thesession_sets.py . --into data/thesession.json`. v2505 was
-  published that way (tune data still the 2026-10-25 export).
+  `python src/thesession_sets.py . --into data/thesession.json`. (v2505 is a
+  full rebuild from the 2026-11-10 export, not that.)
 - The legacy merged bundle never contains `sets`.
 - Tests: `test/thesession_sets_test.py`.
 
