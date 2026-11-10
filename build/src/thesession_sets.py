@@ -13,13 +13,27 @@ than a real set, which this leaves out (see MAX_SET_SIZE).
 
 Output, embedded as a top-level key of thesession.json:
 
-    "sets": { "<tune_id>": [[partner_id, in_sets, on_recordings, followed_by], ...] }
+    "sets": { "<tune_id>": [[partner_id, in_sets, on_recordings,
+                             followed_by, preceded_by], ...] }
 
 - `in_sets`      — member sets containing both tunes (what thesession.org counts)
 - `on_recordings`— recording tracks containing both tunes
 - `followed_by`  — how often the partner came DIRECTLY AFTER this tune, in a
-                   set or on a track. It is what "what do we play next" wants,
-                   and the reverse direction is the partner's own entry.
+                   set or on a track. It is what "what do we play next" wants.
+- `preceded_by`  — how often it came directly BEFORE this tune.
+
+Both directions are carried on the PAIR, counted before the list is cut to
+MAX_PARTNERS. They used to be one number here with the reverse read from the
+partner's own entry, but each tune keeps only its own top 12, so that entry is
+often not there — and an absent entry read as zero claimed a direction the
+data does not support (The Cock and the Hen -> The Kid on the Mountain showed
+"usually played after" on 6 transitions each way).
+
+Adjacency is only claimed between positions that are unambiguous. A set whose
+`settingorder` ties (two tunes both at position 2 — 1,618 sets in the
+2026-11-10 export) or is missing still counts for co-occurrence, but no
+transition is inferred through the tie: sorting would otherwise make tune id
+the ordering rule and publish transitions nobody played.
 
 Partner ids are strings like every other tune id in the file. Ranked by
 `in_sets + on_recordings`, ties broken by id so a rebuild is deterministic,
@@ -52,52 +66,71 @@ MAX_PARTNERS = 12
 MAX_SET_SIZE = 8
 
 
+def _slots(entries):
+    """Ordered (position, tune) pairs -> a list of SLOTS, one per position.
+
+    A slot holding more than one tune is a tie: those tunes are in the group,
+    but which came first is unknown. A position of None (missing or not a
+    number) makes the whole group's order unknown: the lot goes into one
+    slot, which counts for co-occurrence and claims no adjacency at all.
+    """
+    if any(pos is None for pos, _ in entries):
+        return [[t for _, t in entries]]
+    by_pos = collections.defaultdict(list)
+    for pos, tune in entries:
+        by_pos[pos].append(tune)
+    return [by_pos[pos] for pos in sorted(by_pos)]
+
+
+def _position(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _groups_from_sets(rows):
-    """Member sets as ordered lists of tune ids."""
+    """Member sets as lists of position slots (see _slots)."""
     sets = collections.defaultdict(list)
     for r in rows:
         tune = str(r.get('tune_id') or '').strip()
-        if not tune:
+        key = r.get('tuneset')
+        if not tune or key in (None, ''):
             continue
-        try:
-            order = int(r.get('settingorder') or 0)
-        except ValueError:
-            order = 0
-        sets[r.get('tuneset')].append((order, tune))
-    return [[t for _, t in sorted(v)] for v in sets.values()]
+        sets[key].append((_position(r.get('settingorder')), tune))
+    return [_slots(v) for _, v in sorted(sets.items(), key=lambda kv: str(kv[0]))]
 
 
 def _groups_from_recordings(rows):
-    """Recording tracks as ordered lists of tune ids.
+    """Recording tracks as lists of position slots.
 
     A track whose tunes are not all linked to thesession tunes still counts
     for the linked ones, but adjacency is only claimed between tunes that were
     adjacent on the track: an unlinked tune between two linked ones means they
-    were not played one after the other.
+    were not played one after the other. Unlinked tunes are kept as '' so
+    adjacency sees the gap and the size limit counts them.
     """
     tracks = collections.defaultdict(list)
     for r in rows:
-        try:
-            number = int(r.get('number') or 0)
-        except ValueError:
-            number = 0
         tracks[(r.get('id'), r.get('track'))].append(
-            (number, str(r.get('tune_id') or '').strip()))
-    # Unlinked tunes are kept as '' so adjacency sees the gap.
-    return [[t for _, t in sorted(v)] for v in tracks.values()]
+            (_position(r.get('number')), str(r.get('tune_id') or '').strip()))
+    return [_slots(v) for _, v in sorted(tracks.items(), key=lambda kv: str(kv[0]))]
 
 
 def _count(groups, together, follows):
-    for group in groups:
-        linked = [t for t in group if t]
-        if len(linked) < 2 or len(group) > MAX_SET_SIZE:
+    for slots in groups:
+        size = sum(len(slot) for slot in slots)
+        members = {t for slot in slots for t in slot if t}
+        if len(members) < 2 or size > MAX_SET_SIZE:
             continue
-        members = set(linked)
         for a in members:
             for b in members:
                 if a != b:
                     together[(a, b)] += 1
-        for a, b in zip(group, group[1:]):
+        for here, nxt in zip(slots, slots[1:]):
+            if len(here) != 1 or len(nxt) != 1:
+                continue        # a tie on either side: order unknown
+            a, b = here[0], nxt[0]
             if a and b and a != b:
                 follows[(a, b)] += 1
 
@@ -115,10 +148,14 @@ def build_set_partners(set_rows, recording_rows, known_tunes,
     for (a, b) in set(in_sets) | set(on_recordings):
         if a in known and b in known:
             by_tune[a][b] = [in_sets[(a, b)], on_recordings[(a, b)],
-                             follows[(a, b)]]
+                             follows[(a, b)], follows[(b, a)]]
 
+    # Emitted in tune-id order: the pair set above iterates in hash order, and
+    # json.dump writes keys in insertion order, so without this two rebuilds of
+    # the same inputs produce different bytes (and different file hashes).
     out = {}
-    for tune, partners in by_tune.items():
+    for tune in sorted(by_tune, key=int):
+        partners = by_tune[tune]
         ranked = sorted(partners.items(),
                         key=lambda kv: (-(kv[1][0] + kv[1][1]), int(kv[0])))
         out[tune] = [[p, *counts] for p, counts in ranked[:max_partners]]

@@ -162,7 +162,7 @@ def validate_set_partners(payload, errors):
             bad += 1
             continue
         for entry in partners:
-            if (not isinstance(entry, list) or len(entry) != 4
+            if (not isinstance(entry, list) or len(entry) != 5
                     or entry[0] not in aliases or entry[0] == tune
                     or not all(isinstance(n, int) and n >= 0
                                for n in entry[1:])):
